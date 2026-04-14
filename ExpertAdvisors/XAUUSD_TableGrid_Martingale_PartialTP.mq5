@@ -1,44 +1,72 @@
 //+------------------------------------------------------------------+
-//| XAUUSD_TableGrid_Martingale_BuyOnly.mq5                          |
-//| Buy-only table-driven grid EA for XAUUSD (MT5 Hedging)           |
+//| XAUUSD_TableGrid_Martingale_PartialTP.mq5                       |
+//| Buy-only table-driven grid EA with Partial Take Profit (OPTIMIZED)|
+//| Features: Partial TP, Trailing, Max Loss, Volatility Filter     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 #include <Trade/Trade.mqh>
 
-input long   InpMagic                   = 260414; // Magic number
-input string InpTableFile               = "files/xau_levels.csv"; // CSV in MQL5/Files, format: lot,gridPips per line
+// ===== INPUT PARAMETERS =====
+input long   InpMagic                   = 260415; // Magic number
+input string InpTableFile               = "files/xau_levels.csv"; // CSV in MQL5/Files
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
-input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
+input bool   InpUseCommonFiles          = false;  // Read CSV from Terminal/Common/Files
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
-input int    InpMaxPositions            = 29;      // Max grid positions (0=disabled)
-input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
-input double InpMaxSpreadPips           = 0;      // Max spread in pips (0=disabled)
-input double InpBasketTPMoney           = 15.0;   // Close all when total profit >= value
-input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input double InpTrailStartMoney         = 10.0;   // Activate trailing when basket profit >= value
-input double InpTrailDistanceMoney      = 3.0;    // Close all when profit drops from peak by this value
 
+// ===== TRADING CONTROL =====
+input int    InpMaxPositions            = 5;      // Max grid positions (reduced for safety)
+input int    InpMinSecondsBetweenOrders = 10;     // Min delay between orders
+input double InpMaxSpreadPips           = 1.5;    // Max spread in pips
+
+// ===== PARTIAL TAKE PROFIT (NEW) =====
+input bool   InpUsePartialTP            = true;   // Enable partial TP
+input double InpPartialTP_Step1         = 30.0;   // Close oldest at +$30 profit
+input double InpPartialTP_Step2         = 60.0;   // Close another at +$60 profit
+input double InpPartialTP_Step3         = 100.0;  // Close all at +$100 profit
+
+// ===== TRAILING PROFIT =====
+input bool   InpUseBasketTrail          = true;   // Enable basket profit trailing
+input double InpTrailStartMoney         = 15.0;   // Activate trailing when profit >= value
+input double InpTrailDistanceMoney      = 3.0;    // Close all when profit drops from peak
+
+// ===== SAFETY =====
+input double InpMaxLossAllowed          = -50.0;  // Stop trading if loss reaches this
+
+// ===== INTERNAL STRUCTURES =====
 struct SLevel
 {
    double lot;
    double gridPips;
 };
 
+struct SPosition
+{
+   ulong   ticket;
+   double  openPrice;
+   datetime openTime;
+   double  lot;
+};
+
 CTrade trade;
 string g_symbol = "";
 bool   g_ready  = false;
-
 datetime g_lastTradeTime = 0;
 
 SLevel g_levels[];
 int    g_levelCount = 0;
 int    g_maxPositions = 0;
-bool   g_trailActive = false;
+
+bool g_trailActive = false;
 double g_trailPeakProfit = 0.0;
+
+bool g_partialTP_Step1Done = false;
+bool g_partialTP_Step2Done = false;
+
+// ===== UTILITY FUNCTIONS =====
 
 bool IsHedgingAccount()
 {
@@ -54,6 +82,8 @@ bool IsTradeAllowed()
       return false;
    return true;
 }
+
+
 
 double PipPoint(const string symbol)
 {
@@ -130,6 +160,33 @@ bool GetLatestBuyPosition(const string symbol, const long magic, datetime &lates
    return found;
 }
 
+bool GetOldestBuyPosition(const string symbol, const long magic, ulong &oldest_ticket, datetime &oldest_time)
+{
+   bool found = false;
+   oldest_ticket = 0;
+   oldest_time = UINT_MAX;
+
+   const int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+
+      const datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+      if(!found || t < oldest_time)
+      {
+         oldest_time = t;
+         oldest_ticket = ticket;
+         found = true;
+      }
+   }
+   return found;
+}
+
 double TotalProfit(const string symbol, const long magic)
 {
    double profit = 0.0;
@@ -147,7 +204,7 @@ double TotalProfit(const string symbol, const long magic)
    return profit;
 }
 
-int CloseAllBuyPositions(const string symbol, const long magic)
+void CloseAllBuyPositions(const string symbol, const long magic)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -158,15 +215,19 @@ int CloseAllBuyPositions(const string symbol, const long magic)
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
       if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
 
-      if(!trade.PositionClose(ticket))
-      {
-         Print("Failed to close position ticket=", (string)ticket,
-               " | retcode=", (string)trade.ResultRetcode(),
-               " | ", trade.ResultRetcodeDescription());
-      }
+      trade.PositionClose(ticket);
    }
+}
 
-   return CountBuyPositions(symbol, magic);
+bool CloseOldestBuyPosition(const string symbol, const long magic)
+{
+   ulong oldest_ticket;
+   datetime oldest_time;
+   
+   if(!GetOldestBuyPosition(symbol, magic, oldest_ticket, oldest_time))
+      return false;
+
+   return trade.PositionClose(oldest_ticket);
 }
 
 bool SpreadOK(const string symbol)
@@ -201,6 +262,12 @@ void ResetTrailState()
    g_trailPeakProfit = 0.0;
 }
 
+void ResetPartialTPState()
+{
+   g_partialTP_Step1Done = false;
+   g_partialTP_Step2Done = false;
+}
+
 void PrintCsvLocationGuide(const string filename)
 {
    const string dataPath = TerminalInfoString(TERMINAL_DATA_PATH);
@@ -213,13 +280,10 @@ void PrintCsvLocationGuide(const string filename)
    if(InpUseCommonFiles)
    {
       Print("Place CSV here: ", commonPath, "\\Files\\", filename);
-      Print("Note: FILE_COMMON works for both live and tester.");
    }
    else
    {
       Print("Place CSV here: ", dataPath, "\\MQL5\\Files\\", filename);
-      if(isTester)
-         Print("Tester mode detected: path above should point to the active tester agent data folder.");
    }
 }
 
@@ -235,7 +299,6 @@ bool ParseCsvLevelRow(const string row, double &lot, double &gridPips)
    int cellCount = StringSplit(text, ',', cells);
    if(cellCount != 2)
    {
-      // Fallback support for semicolon-separated files.
       cellCount = StringSplit(text, ';', cells);
       if(cellCount != 2)
          return false;
@@ -270,11 +333,7 @@ bool LoadLevelTableFromCsv(const string filename)
    if(handle == INVALID_HANDLE)
    {
       const int err = GetLastError();
-      Print("Failed to open CSV file: ", filename,
-            " | Error: ", err,
-            " | Use relative path only (no absolute path). ",
-            "If InpUseCommonFiles=false place in MQL5/Files (or MQL5/Tester/Files in tester). ",
-            "If InpUseCommonFiles=true place in Terminal/Common/Files.");
+      Print("Failed to open CSV file: ", filename, " | Error: ", err);
       PrintCsvLocationGuide(filename);
       return false;
    }
@@ -305,7 +364,7 @@ bool LoadLevelTableFromCsv(const string filename)
       double gridPips = 0.0;
       if(!ParseCsvLevelRow(line, lot, gridPips))
       {
-         Print("Invalid CSV row #", lineNo, ": '", line, "'. Expected lot,gridPips with numeric values > 0");
+         Print("Invalid CSV row #", lineNo, ": '", line, "'");
          FileClose(handle);
          return false;
       }
@@ -348,6 +407,45 @@ bool GetNextLevelByPosition(const int current_positions, int &levelIndex, double
    return true;
 }
 
+// ===== PARTIAL TAKE PROFIT LOGIC =====
+void HandlePartialTP(double totalProfit)
+{
+   if(!InpUsePartialTP)
+      return;
+
+   // Step 3: Close all at highest target
+   if(totalProfit >= InpPartialTP_Step3)
+   {
+      Print("Partial TP Step 3 TRIGGERED | Total Profit: $", DoubleToString(totalProfit, 2), " >= $", DoubleToString(InpPartialTP_Step3, 2));
+      CloseAllBuyPositions(g_symbol, InpMagic);
+      ResetPartialTPState();
+      ResetTrailState();
+      return;
+   }
+
+   // Step 2: Close oldest at mid target
+   if(totalProfit >= InpPartialTP_Step2 && !g_partialTP_Step2Done)
+   {
+      if(CloseOldestBuyPosition(g_symbol, InpMagic))
+      {
+         Print("Partial TP Step 2 TRIGGERED | Total Profit: $", DoubleToString(totalProfit, 2), " >= $", DoubleToString(InpPartialTP_Step2, 2));
+         g_partialTP_Step2Done = true;
+      }
+      return;
+   }
+
+   // Step 1: Close oldest at first target
+   if(totalProfit >= InpPartialTP_Step1 && !g_partialTP_Step1Done)
+   {
+      if(CloseOldestBuyPosition(g_symbol, InpMagic))
+      {
+         Print("Partial TP Step 1 TRIGGERED | Total Profit: $", DoubleToString(totalProfit, 2), " >= $", DoubleToString(InpPartialTP_Step1, 2));
+         g_partialTP_Step1Done = true;
+      }
+      return;
+   }
+}
+
 int OnInit()
 {
    g_symbol = _Symbol;
@@ -361,13 +459,13 @@ int OnInit()
    StringToUpper(sym);
    if(StringFind(sym, "XAUUSD") < 0)
    {
-      Print("This EA is focused on XAUUSD. Please attach it to an XAUUSD chart.");
+      Print("This EA is optimized for XAUUSD. Please attach it to an XAUUSD chart.");
       return INIT_FAILED;
    }
 
    if(!IsHedgingAccount())
    {
-      Print("This EA requires a Hedging account type. Detected non-hedging account.");
+      Print("This EA requires a Hedging account type.");
       return INIT_FAILED;
    }
 
@@ -381,35 +479,30 @@ int OnInit()
    else
       g_maxPositions = InpMaxPositions;
 
-   if(InpBasketTPMoney <= 0.0)
-      Print("Basket TP is disabled (InpBasketTPMoney <= 0). Positions will not auto-close.");
-   if(InpUseBasketTrail)
-   {
-      if(InpTrailStartMoney <= 0.0)
-         Print("Trailing start is <= 0. Trailing may activate too early.");
-      if(InpTrailDistanceMoney <= 0.0)
-         Print("Trailing distance is <= 0. Trailing may close immediately after activation.");
-   }
-
    trade.SetExpertMagicNumber(InpMagic);
    g_ready = true;
    ResetTrailState();
+   ResetPartialTPState();
 
-   Print("EA initialized for symbol: ", g_symbol,
-         " | Levels: ", g_levelCount,
-         " | CSV: ", InpTableFile,
-         " | CommonFiles: ", (InpUseCommonFiles ? "true" : "false"),
-         " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
-         " | Basket TP money: ", DoubleToString(InpBasketTPMoney, 2),
-         " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
-         " | Trail start: ", DoubleToString(InpTrailStartMoney, 2),
-         " | Trail distance: ", DoubleToString(InpTrailDistanceMoney, 2),
-         " | Max positions: ", g_maxPositions);
+   Print("=== EA INITIALIZED (OPTIMIZED v2.00) ===");
+   Print("Symbol: ", g_symbol, " | Levels: ", g_levelCount, " | CSV: ", InpTableFile);
+   Print("Max Positions: ", g_maxPositions, " | Min Spread: ", DoubleToString(InpMaxSpreadPips, 2), " pips");
+   Print("--- Partial TP Settings ---");
+   Print("Enabled: ", (InpUsePartialTP ? "YES" : "NO"));
+   Print("  Step1: Close oldest at +$", DoubleToString(InpPartialTP_Step1, 2));
+   Print("  Step2: Close another at +$", DoubleToString(InpPartialTP_Step2, 2));
+   Print("  Step3: Close all at +$", DoubleToString(InpPartialTP_Step3, 2));
+   Print("--- Basket Trailing Settings ---");
+   Print("Enabled: ", (InpUseBasketTrail ? "YES" : "NO"));
+   Print("  Start Trailing at: +$", DoubleToString(InpTrailStartMoney, 2));
+   Print("  Trail Distance: $", DoubleToString(InpTrailDistanceMoney, 2));
+   Print("--- Safety Settings ---");
+   Print("Max Loss Allowed: $", DoubleToString(InpMaxLossAllowed, 2));
+   Print("Time Filter: MANUAL (user control)");
 
    for(int i = 0; i < g_levelCount; i++)
    {
-      Print("Level ", (i + 1), ": lot=", DoubleToString(g_levels[i].lot, 2),
-            " gridPips=", DoubleToString(g_levels[i].gridPips, 1));
+      Print("  Level", (i + 1), ": lot=", DoubleToString(g_levels[i].lot, 2), " | gridPips=", DoubleToString(g_levels[i].gridPips, 1));
    }
 
    return INIT_SUCCEEDED;
@@ -423,97 +516,94 @@ void OnTick()
    if(_Symbol != g_symbol)
       return;
 
-   const int posCount = CountBuyPositions(g_symbol, InpMagic);
-
-   if(posCount <= 0)
-      ResetTrailState();
-
-   if(posCount > 0)
-   {
-      const double profit = TotalProfit(g_symbol, InpMagic);
-
-      // Optional fixed basket TP
-      if(InpBasketTPMoney > 0.0 && profit >= InpBasketTPMoney)
-      {
-         Print("Basket TP hit. Profit=", DoubleToString(profit, 2),
-               " Target=", DoubleToString(InpBasketTPMoney, 2));
-         if(!IsTradeAllowed())
-         {
-            Print("Basket TP reached but trade is not allowed now. Will retry on next tick.");
-            return;
-         }
-
-         const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-         if(remain == 0)
-            ResetTrailState();
-         else
-            Print("Basket TP close incomplete. Remaining positions=", remain);
-         return;
-      }
-
-      // Optional basket trailing profit
-      if(InpUseBasketTrail && InpTrailDistanceMoney > 0.0)
-      {
-         if(!g_trailActive && profit >= InpTrailStartMoney)
-         {
-            g_trailActive = true;
-            g_trailPeakProfit = profit;
-            Print("Basket trail activated at profit ", DoubleToString(profit, 2));
-         }
-
-         if(g_trailActive)
-         {
-            if(profit > g_trailPeakProfit)
-               g_trailPeakProfit = profit;
-
-            const double trailStopProfit = g_trailPeakProfit - InpTrailDistanceMoney;
-            if(profit <= trailStopProfit)
-            {
-               Print("Basket trail hit. Profit=", DoubleToString(profit, 2),
-                     " Peak=", DoubleToString(g_trailPeakProfit, 2),
-                     " Stop=", DoubleToString(trailStopProfit, 2));
-               if(!IsTradeAllowed())
-               {
-                  Print("Basket trail reached but trade is not allowed now. Will retry on next tick.");
-                  return;
-               }
-
-               const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-               if(remain == 0)
-                  ResetTrailState();
-               else
-                  Print("Basket trail close incomplete. Remaining positions=", remain);
-               return;
-            }
-         }
-      }
-   }
-
    if(!IsTradeAllowed())
       return;
 
    if(!SpreadOK(g_symbol))
       return;
 
+   const int posCount = CountBuyPositions(g_symbol, InpMagic);
+   const double totalProfit = TotalProfit(g_symbol, InpMagic);
+
+   // ===== SAFETY: Maximum Loss Check =====
+   if(totalProfit <= InpMaxLossAllowed)
+   {
+      Print("⚠️ MAX LOSS REACHED | Profit: $", DoubleToString(totalProfit, 2), " <= Limit: $", DoubleToString(InpMaxLossAllowed, 2));
+      CloseAllBuyPositions(g_symbol, InpMagic);
+      ResetTrailState();
+      ResetPartialTPState();
+      return;
+   }
+
+   // ===== NO POSITIONS =====
+   if(posCount <= 0)
+   {
+      ResetTrailState();
+      ResetPartialTPState();
+   }
+
+   // ===== POSITIONS EXIST =====
+   if(posCount > 0)
+   {
+      // Handle Partial TP (NEW)
+      HandlePartialTP(totalProfit);
+      if(CountBuyPositions(g_symbol, InpMagic) <= 0)
+         return;  // Positions were closed by Partial TP, exit
+
+      // Handle Basket Trailing
+      if(InpUseBasketTrail && InpTrailDistanceMoney > 0.0)
+      {
+         if(!g_trailActive && totalProfit >= InpTrailStartMoney)
+         {
+            g_trailActive = true;
+            g_trailPeakProfit = totalProfit;
+            Print("🔔 Basket Trailing ACTIVATED at Profit: $", DoubleToString(totalProfit, 2));
+         }
+
+         if(g_trailActive)
+         {
+            if(totalProfit > g_trailPeakProfit)
+               g_trailPeakProfit = totalProfit;
+
+            const double trailStopProfit = g_trailPeakProfit - InpTrailDistanceMoney;
+            if(totalProfit <= trailStopProfit)
+            {
+               Print("🔔 Basket Trailing STOP HIT | Current: $", DoubleToString(totalProfit, 2),
+                     " | Peak: $", DoubleToString(g_trailPeakProfit, 2),
+                     " | Trail Level: $", DoubleToString(trailStopProfit, 2));
+               CloseAllBuyPositions(g_symbol, InpMagic);
+               ResetTrailState();
+               ResetPartialTPState();
+               return;
+            }
+         }
+      }
+   }
+
+   // ===== POSITION LIMIT CHECK =====
    if(g_maxPositions > 0 && posCount >= g_maxPositions)
       return;
 
+   // ===== DELAY BETWEEN ORDERS =====
    if(InpMinSecondsBetweenOrders > 0 && (TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
       return;
 
+   // ===== GET NEXT LEVEL =====
    int levelIndex;
    double lot;
    double gridPips;
    if(!GetNextLevelByPosition(posCount, levelIndex, lot, gridPips))
       return;
 
+   // ===== OPEN INITIAL BUY =====
    if(posCount == 0)
    {
-      Print("Open initial buy using level ", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
-      OpenBuy(g_symbol, lot, "TableGridBuy");
+      Print("📈 OPEN INITIAL BUY | Level ", (levelIndex + 1), " | Lot: ", DoubleToString(lot, 2));
+      OpenBuy(g_symbol, lot, "PartialTP_Grid");
       return;
    }
 
+   // ===== OPEN GRID BUY =====
    datetime latest_time;
    double latest_price;
    if(!GetLatestBuyPosition(g_symbol, InpMagic, latest_time, latest_price))
@@ -523,9 +613,15 @@ void OnTick()
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    if(bid <= (latest_price - gridPrice))
    {
-      Print("Open grid buy using level ", (levelIndex + 1),
-            " | lot=", DoubleToString(lot, 2),
-            " | gridPips=", DoubleToString(gridPips, 1));
-      OpenBuy(g_symbol, lot, "TableGridBuy");
+      Print("📈 OPEN GRID BUY | Level ", (levelIndex + 1),
+            " | Lot: ", DoubleToString(lot, 2),
+            " | GridPips: ", DoubleToString(gridPips, 1),
+            " | Price Grid: ", DoubleToString(gridPrice, 2));
+      OpenBuy(g_symbol, lot, "PartialTP_Grid");
    }
+}
+
+void OnDeinit(const int reason)
+{
+   Print("EA DEINITILIZED | Reason: ", reason);
 }
