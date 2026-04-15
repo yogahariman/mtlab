@@ -33,7 +33,7 @@ input int    InpMaxPositions            = 50;      // Max grid positions (0=disa
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
 input double InpMaxSpreadFirstEntryPips = 0;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 0;      // Max spread for grid entry in pips (0=disabled)
-input bool   InpUseFirstEntryRsiFilter  = true;  // Enable RSI filter for the first buy entry only
+input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
 input ENUM_TIMEFRAMES InpRsiTimeframe   = PERIOD_CURRENT; // RSI timeframe
 input int    InpRsiPeriod               = 14;     // RSI period
 input double InpRsiThreshold            = 50.0;   // First entry allowed only if RSI < threshold
