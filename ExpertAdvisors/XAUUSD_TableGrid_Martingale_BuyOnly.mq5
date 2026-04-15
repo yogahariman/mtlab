@@ -31,7 +31,7 @@ input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when pos
 input group "Risk & Entry"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
-input int    InpCooldownAfterCloseSeconds = 15;  // Cooldown after EA closes all positions
+input int    InpCooldownAfterCloseSeconds = 60;  // Cooldown after EA closes all positions
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
