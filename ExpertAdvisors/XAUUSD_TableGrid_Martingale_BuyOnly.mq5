@@ -29,10 +29,10 @@ input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Commo
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
 
 input group "Risk & Entry"
-input int    InpMaxPositions            = 50;      // Max grid positions (0=disabled)
+input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
 input double InpMaxSpreadFirstEntryPips = 0;      // Max spread for first entry in pips (0=disabled)
-input double InpMaxSpreadGridEntryPips  = 0;      // Max spread for grid entry in pips (0=disabled)
+input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
 input ENUM_TIMEFRAMES InpRsiTimeframe   = PERIOD_CURRENT; // RSI timeframe
 input int    InpRsiPeriod               = 14;     // RSI period
