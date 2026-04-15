@@ -1,0 +1,16 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Include/**"
+      ],
+      "defines": [],
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ]
+}
