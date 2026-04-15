@@ -30,7 +30,7 @@ input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when pos
 
 input group "Risk & Entry"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
-input int    InpMinSecondsBetweenOrders = 3;     // Min delay between orders
+input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
@@ -44,9 +44,9 @@ input double InpBasketTPMoney           = 0;   // Close all when total profit >=
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input double InpTrailStartMoney         = 20.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
-input double InpGrid1TPMoney            = 2.0;    // Forced basket TP when grid count is 1
-input double InpGrid2TPMoney            = 4.0;    // Forced basket TP when grid count is 2
-input double InpGrid3TPMoney            = 8.0;    // Forced basket TP when grid count is 3
+input double InpGrid1TPMoney            = 1.5;    // Forced basket TP when grid count is 1
+input double InpGrid2TPMoney            = 3.5;    // Forced basket TP when grid count is 2
+input double InpGrid3TPMoney            = 7.0;    // Forced basket TP when grid count is 3
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
