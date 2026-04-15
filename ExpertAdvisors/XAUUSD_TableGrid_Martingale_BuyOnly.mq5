@@ -44,6 +44,9 @@ input double InpBasketTPMoney           = 0;   // Close all when total profit >=
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input double InpTrailStartMoney         = 20.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
+input double InpGrid1TPMoney            = 2.0;    // Forced basket TP when grid count is 1
+input double InpGrid2TPMoney            = 4.0;    // Forced basket TP when grid count is 2
+input double InpGrid3TPMoney            = 8.0;    // Forced basket TP when grid count is 3
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
@@ -709,9 +712,55 @@ void OnTick()
    if(posCount > 0)
    {
       const double profit = TotalProfit(g_symbol, InpMagic);
+      double forcedTpMoney = 0.0;
+      bool forceTrailOff = false;
+
+      // Requested behavior:
+      // - Grid 1..3: trailing OFF, basket TP fixed to 2/4/8
+      // - Grid 4+: trailing can run normally
+      if(posCount == 1)
+      {
+         forcedTpMoney = InpGrid1TPMoney;
+         forceTrailOff = true;
+      }
+      else if(posCount == 2)
+      {
+         forcedTpMoney = InpGrid2TPMoney;
+         forceTrailOff = true;
+      }
+      else if(posCount == 3)
+      {
+         forcedTpMoney = InpGrid3TPMoney;
+         forceTrailOff = true;
+      }
+
+      if(forceTrailOff && g_trailActive)
+      {
+         Print("Basket trail OFF | reason=grid<=3");
+         ResetTrailState();
+      }
+
+      if(forcedTpMoney > 0.0 && profit >= forcedTpMoney)
+      {
+         Print("Forced TP hit | grid=", posCount,
+               " | profit=", DoubleToString(profit, 2),
+               " | target=", DoubleToString(forcedTpMoney, 2));
+         if(!IsTradeAllowed())
+         {
+            Print("Forced TP wait | trade not allowed");
+            return;
+         }
+
+         const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+         if(remain == 0)
+            ResetTrailState();
+         else
+            Print("Forced TP close partial | remain=", remain);
+         return;
+      }
 
       // Optional fixed basket TP
-      if(InpBasketTPMoney > 0.0 && profit >= InpBasketTPMoney)
+      if(!forceTrailOff && InpBasketTPMoney > 0.0 && profit >= InpBasketTPMoney)
       {
          Print("Basket TP hit | profit=", DoubleToString(profit, 2),
                " | target=", DoubleToString(InpBasketTPMoney, 2));
@@ -730,7 +779,7 @@ void OnTick()
       }
 
       // Optional basket trailing profit
-      if(InpUseBasketTrail && InpTrailDistanceMoney > 0.0)
+      if(!forceTrailOff && InpUseBasketTrail && InpTrailDistanceMoney > 0.0)
       {
          if(!g_trailActive && profit >= InpTrailStartMoney)
          {
