@@ -17,9 +17,9 @@ input long   InpMagic                   = 260414; // Magic number
 input bool   InpShowCycleRefOnChart     = true;   // Show manual cycle reference on chart
 
 input group "Manual Resume (Top Priority)"
-input int    InpManualResumeCycleId     = 0;      // Trigger step (0->1->2->3): new batch only when value increases
-input double InpManualResumeLot         = 0.11;   // Manual resume lot per order
-input double InpManualResumeGridPips    = 200.0;  // Manual resume grid in pips
+input int    InpManualResumeCycleId     = 0;      // "Trigger button" 1->2->3; new batch only when this value increases
+input double InpManualResumeLot         = 0.12;   // Manual resume lot per order
+input double InpManualResumeGridPips    = 100.0;  // Manual resume grid in pips
 input int    InpManualResumeCount       = 5;      // Additional positions to open in current manual batch
 
 input group "CSV Level Table"
@@ -29,24 +29,25 @@ input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Commo
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
 
 input group "Risk & Entry"
-input int    InpMaxPositions            = 50;      // Max grid positions (0=disabled)
+input int    InpMaxPositions            = 29;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
-input double InpMaxSpreadFirstEntryPips = 0;      // Max spread for first entry in pips (0=disabled)
-input double InpMaxSpreadGridEntryPips  = 0;      // Max spread for grid entry in pips (0=disabled)
-input bool   InpUseFirstEntryRsiFilter  = true;  // Enable RSI filter for the first buy entry only
+input double InpMaxSpreadPips           = 0;      // Max spread in pips (0=disabled)
+input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
 input ENUM_TIMEFRAMES InpRsiTimeframe   = PERIOD_CURRENT; // RSI timeframe
 input int    InpRsiPeriod               = 14;     // RSI period
 input double InpRsiThreshold            = 50.0;   // First entry allowed only if RSI < threshold
 input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev >= value
 
 input group "Exit & Trailing"
-input double InpBasketTPMoney           = 0;   // Close all when total profit >= value
+input double InpBasketTPMoney           = 15.0;   // Close all when total profit >= value
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input double InpTrailStartMoney         = 20.0;   // Activate trailing when basket profit >= value
-input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
+input double InpTrailStartMoney         = 15.0;   // Activate trailing when basket profit >= value
+input double InpTrailDistanceMoney      = 3.0;    // Close all when profit drops from peak by this value
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
+input string InpTelegramBotToken        = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";      // Telegram bot token
+input string InpTelegramChatId          = "8371480289";      // Telegram chat_id
 
 struct SLevel
 {
@@ -74,10 +75,6 @@ int    g_manualBatchTargetCount = 0;
 double g_manualBatchLot = 0.0;
 double g_manualBatchGridPips = 0.0;
 int    g_rsiHandle = INVALID_HANDLE;
-
-// Hardcoded Telegram credentials (hidden from EA Properties/.set)
-const string TG_BOT_TOKEN = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";
-const string TG_CHAT_ID   = "8371480289";
 
 bool IsHedgingAccount()
 {
@@ -199,18 +196,18 @@ int CloseAllBuyPositions(const string symbol, const long magic)
 
       if(!trade.PositionClose(ticket))
       {
-         Print("Close fail | ticket=", (string)ticket,
+         Print("Failed to close position ticket=", (string)ticket,
                " | retcode=", (string)trade.ResultRetcode(),
-               " | desc=", trade.ResultRetcodeDescription());
+               " | ", trade.ResultRetcodeDescription());
       }
    }
 
    return CountBuyPositions(symbol, magic);
 }
 
-bool SpreadOK(const string symbol, const double maxSpreadPips)
+bool SpreadOK(const string symbol)
 {
-   if(maxSpreadPips <= 0.0)
+   if(InpMaxSpreadPips <= 0.0)
       return true;
 
    const double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
@@ -219,7 +216,7 @@ bool SpreadOK(const string symbol, const double maxSpreadPips)
    if(pipPoint <= 0.0) return true;
 
    const double spreadPips = (ask - bid) / pipPoint;
-   return (spreadPips <= maxSpreadPips);
+   return (spreadPips <= InpMaxSpreadPips);
 }
 
 bool OpenBuy(const string symbol, const double lot, const string comment)
@@ -280,14 +277,14 @@ string UrlEncode(const string src)
 
 bool SendTelegramMessage(const string text)
 {
-   if(StringLen(TG_BOT_TOKEN) == 0 || StringLen(TG_CHAT_ID) == 0)
+   if(StringLen(InpTelegramBotToken) == 0 || StringLen(InpTelegramChatId) == 0)
    {
-      Print("Telegram skip | token/chat_id empty");
+      Print("MaxPositions warning: Telegram token/chat_id is empty.");
       return false;
    }
 
-   const string url = "https://api.telegram.org/bot" + TG_BOT_TOKEN + "/sendMessage";
-   const string body = "chat_id=" + UrlEncode(TG_CHAT_ID) + "&text=" + UrlEncode(text);
+   const string url = "https://api.telegram.org/bot" + InpTelegramBotToken + "/sendMessage";
+   const string body = "chat_id=" + UrlEncode(InpTelegramChatId) + "&text=" + UrlEncode(text);
    const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
 
    char data[];
@@ -304,29 +301,30 @@ bool SendTelegramMessage(const string text)
    const int code = WebRequest("POST", url, headers, 5000, data, result, result_headers);
    if(code == -1)
    {
-      Print("Telegram fail | err=", GetLastError(),
-            " | allow_url=https://api.telegram.org");
+      Print("MaxPositions warning: WebRequest failed, err=", GetLastError(),
+            ". Enable URL: https://api.telegram.org");
       return false;
    }
 
    if(code < 200 || code >= 300)
    {
-      Print("Telegram fail | http_code=", code);
+      Print("MaxPositions warning: Telegram HTTP code=", code);
       return false;
    }
 
-   Print("Telegram OK | pause warning sent");
+   Print("MaxPositions warning sent to Telegram.");
    return true;
 }
 
 void SendPauseWarning(const int posCount, const string reason)
 {
-   const string accountName = AccountInfoString(ACCOUNT_NAME);
    const string msg =
-      "EA Paused | " + reason + "\n" +
-      "Acct: " + accountName + "\n" +
-      "Sym: " + g_symbol + "\n" +
-      "Pos: " + (string)posCount + "/" + (string)g_maxPositions;
+      "MT5 Alert: EA Paused\n" +
+      "Reason: " + reason + "\n" +
+      "Symbol: " + g_symbol + "\n" +
+      "Magic: " + (string)InpMagic + "\n" +
+      "Current: " + (string)posCount + "\n" +
+      "Limit: " + (string)g_maxPositions;
 
    Print(msg);
    if(InpWarnOnMaxPositions)
@@ -357,7 +355,7 @@ void TryActivateManualBatch(const int posCount)
 
    if(InpManualResumeLot <= 0.0 || InpManualResumeGridPips <= 0.0 || InpManualResumeCount <= 0)
    {
-      Print("Manual resume ignored: invalid params (need lot>0, grid>0, count>0).");
+      Print("Manual resume ignored: invalid parameters. Need lot>0, grid>0, count>0.");
       DeactivateManualBatch();
       return;
    }
@@ -370,9 +368,9 @@ void TryActivateManualBatch(const int posCount)
    g_manualBatchGridPips = InpManualResumeGridPips;
    g_maxPosWarnSent = false;
 
-   Print("Manual resume batch ON. Cycle=", InpManualResumeCycleId,
+   Print("Manual resume activated. Cycle=", InpManualResumeCycleId,
          " | StartPos=", g_manualBatchStartPos,
-         " | TargetAdd=", g_manualBatchTargetCount,
+         " | AddCount=", g_manualBatchTargetCount,
          " | Lot=", DoubleToString(g_manualBatchLot, 2),
          " | GridPips=", DoubleToString(g_manualBatchGridPips, 1));
 }
@@ -392,20 +390,13 @@ void UpdateCycleReferenceComment(const int posCount)
    if(g_manualBatchActive)
       added = posCount - g_manualBatchStartPos;
 
-   string hint = "";
-   if(g_manualPausedByBatch && InpManualResumeCycleId <= g_lastAppliedManualCycleId)
-      hint = "Hint: Increase InpManualResumeCycleId";
-   else if(g_maxPositions > 0 && posCount >= g_maxPositions && !g_manualBatchActive)
-      hint = "Hint: Set resume params then increase CycleId";
-
    string txt =
       "Manual Cycle Ref\n" +
       "Input CycleId: " + (string)InpManualResumeCycleId + "\n" +
       "Applied CycleId: " + (string)g_lastAppliedManualCycleId + "\n" +
       "State: " + state + "\n" +
       "Added/Target: " + (string)added + "/" + (string)g_manualBatchTargetCount + "\n" +
-      "Positions: " + (string)posCount + "/" + (string)g_maxPositions +
-      (StringLen(hint) > 0 ? "\n" + hint : "");
+      "Positions: " + (string)posCount + "/" + (string)g_maxPositions;
 
    Comment(txt);
 }
@@ -416,20 +407,19 @@ void PrintCsvLocationGuide(const string filename)
    const string commonPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH);
    const bool isTester = (MQLInfoInteger(MQL_TESTER) != 0);
 
-   Print("CSV config | file=", filename);
-   Print("CSV mode | run=", (isTester ? "TESTER" : "LIVE"),
-         " | use_common=", (InpUseCommonFiles ? "true" : "false"));
+   Print("CSV input (relative path): ", filename);
+   Print("Mode: ", (isTester ? "TESTER" : "LIVE"), " | UseCommonFiles: ", (InpUseCommonFiles ? "true" : "false"));
 
    if(InpUseCommonFiles)
    {
-      Print("CSV path | ", commonPath, "\\Files\\", filename);
-      Print("CSV note | FILE_COMMON works in live and tester");
+      Print("Place CSV here: ", commonPath, "\\Files\\", filename);
+      Print("Note: FILE_COMMON works for both live and tester.");
    }
    else
    {
-      Print("CSV path | ", dataPath, "\\MQL5\\Files\\", filename);
+      Print("Place CSV here: ", dataPath, "\\MQL5\\Files\\", filename);
       if(isTester)
-         Print("CSV note | tester uses active agent data folder");
+         Print("Tester mode detected: path above should point to the active tester agent data folder.");
    }
 }
 
@@ -480,9 +470,11 @@ bool LoadLevelTableFromCsv(const string filename)
    if(handle == INVALID_HANDLE)
    {
       const int err = GetLastError();
-      Print("CSV open fail | file=", filename,
-            " | err=", err,
-            " | use_relative_path=true");
+      Print("Failed to open CSV file: ", filename,
+            " | Error: ", err,
+            " | Use relative path only (no absolute path). ",
+            "If InpUseCommonFiles=false place in MQL5/Files (or MQL5/Tester/Files in tester). ",
+            "If InpUseCommonFiles=true place in Terminal/Common/Files.");
       PrintCsvLocationGuide(filename);
       return false;
    }
@@ -513,8 +505,7 @@ bool LoadLevelTableFromCsv(const string filename)
       double gridPips = 0.0;
       if(!ParseCsvLevelRow(line, lot, gridPips))
       {
-         Print("CSV row invalid | line=", lineNo,
-               " | row='", line, "' | expected=lot,gridPips (>0)");
+         Print("Invalid CSV row #", lineNo, ": '", line, "'. Expected lot,gridPips with numeric values > 0");
          FileClose(handle);
          return false;
       }
@@ -530,7 +521,7 @@ bool LoadLevelTableFromCsv(const string filename)
 
    if(g_levelCount <= 0)
    {
-      Print("CSV invalid | no valid levels | file=", filename);
+      Print("CSV file has no valid levels: ", filename);
       return false;
    }
 
@@ -562,7 +553,7 @@ int OnInit()
    g_symbol = _Symbol;
    if(!SymbolSelect(g_symbol, true))
    {
-      Print("Init fail | symbol select | symbol=", g_symbol);
+      Print("Failed to select symbol: ", g_symbol);
       return INIT_FAILED;
    }
 
@@ -570,13 +561,13 @@ int OnInit()
    StringToUpper(sym);
    if(StringFind(sym, "XAUUSD") < 0)
    {
-      Print("Init fail | symbol must contain XAUUSD");
+      Print("This EA is focused on XAUUSD. Please attach it to an XAUUSD chart.");
       return INIT_FAILED;
    }
 
    if(!IsHedgingAccount())
    {
-      Print("Init fail | account type must be HEDGING");
+      Print("This EA requires a Hedging account type. Detected non-hedging account.");
       return INIT_FAILED;
    }
 
@@ -589,15 +580,15 @@ int OnInit()
    {
       if(InpRsiPeriod <= 1)
       {
-         Print("Init fail | invalid RSI period | need > 1");
+         Print("Invalid RSI period. Must be > 1.");
          return INIT_FAILED;
       }
       g_rsiHandle = iRSI(g_symbol, InpRsiTimeframe, InpRsiPeriod, PRICE_CLOSE);
       if(g_rsiHandle == INVALID_HANDLE)
       {
-      Print("Init fail | cannot create RSI handle");
-      return INIT_FAILED;
-   }
+         Print("Failed to create RSI handle for first-entry filter.");
+         return INIT_FAILED;
+      }
    }
 
    if(InpMaxPositions <= 0)
@@ -606,13 +597,13 @@ int OnInit()
       g_maxPositions = InpMaxPositions;
 
    if(InpBasketTPMoney <= 0.0)
-      Print("Info | basket_tp=OFF");
+      Print("Basket TP is disabled (InpBasketTPMoney <= 0). Positions will not auto-close.");
    if(InpUseBasketTrail)
    {
       if(InpTrailStartMoney <= 0.0)
-         Print("Warn | trail_start<=0");
+         Print("Trailing start is <= 0. Trailing may activate too early.");
       if(InpTrailDistanceMoney <= 0.0)
-         Print("Warn | trail_distance<=0");
+         Print("Trailing distance is <= 0. Trailing may close immediately after activation.");
    }
 
    trade.SetExpertMagicNumber(InpMagic);
@@ -620,19 +611,15 @@ int OnInit()
    ResetTrailState();
    DeactivateManualBatch();
    g_manualPausedByBatch = false;
-   // Prevent auto-resume on EA restart/reattach when CycleId was already set.
-   g_lastAppliedManualCycleId = InpManualResumeCycleId;
    g_maxPosWarnSent = false;
 
-   Print("EA init OK | Symbol=", g_symbol,
+   Print("EA initialized for symbol: ", g_symbol,
          " | Levels: ", g_levelCount,
          " | CSV: ", InpTableFile,
          " | CommonFiles: ", (InpUseCommonFiles ? "true" : "false"),
          " | ManualCycleId: ", InpManualResumeCycleId,
          " | FirstEntryRSI: ", (InpUseFirstEntryRsiFilter ? "true" : "false"),
-         " | WarnPause: ", (InpWarnOnMaxPositions ? "true" : "false"),
-         " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
-         " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
+         " | WarnMaxPos: ", (InpWarnOnMaxPositions ? "true" : "false"),
          " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
          " | Basket TP money: ", DoubleToString(InpBasketTPMoney, 2),
          " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
@@ -641,12 +628,12 @@ int OnInit()
          " | Max positions: ", g_maxPositions);
 
    if(InpWarnOnMaxPositions)
-      Print("Telegram setup | allow_url=https://api.telegram.org");
+      Print("To send Telegram warning, allow WebRequest URL: https://api.telegram.org");
 
    for(int i = 0; i < g_levelCount; i++)
    {
-      Print("Level ", (i + 1), " | lot=", DoubleToString(g_levels[i].lot, 2),
-            " | gridPips=", DoubleToString(g_levels[i].gridPips, 1));
+      Print("Level ", (i + 1), ": lot=", DoubleToString(g_levels[i].lot, 2),
+            " gridPips=", DoubleToString(g_levels[i].gridPips, 1));
    }
 
    return INIT_SUCCEEDED;
@@ -713,11 +700,11 @@ void OnTick()
       // Optional fixed basket TP
       if(InpBasketTPMoney > 0.0 && profit >= InpBasketTPMoney)
       {
-         Print("Basket TP hit | profit=", DoubleToString(profit, 2),
-               " | target=", DoubleToString(InpBasketTPMoney, 2));
+         Print("Basket TP hit. Profit=", DoubleToString(profit, 2),
+               " Target=", DoubleToString(InpBasketTPMoney, 2));
          if(!IsTradeAllowed())
          {
-            Print("Basket TP wait | trade not allowed");
+            Print("Basket TP reached but trade is not allowed now. Will retry on next tick.");
             return;
          }
 
@@ -725,7 +712,7 @@ void OnTick()
          if(remain == 0)
             ResetTrailState();
          else
-            Print("Basket TP close partial | remain=", remain);
+            Print("Basket TP close incomplete. Remaining positions=", remain);
          return;
       }
 
@@ -736,7 +723,7 @@ void OnTick()
          {
             g_trailActive = true;
             g_trailPeakProfit = profit;
-            Print("Basket trail ON | start_profit=", DoubleToString(profit, 2));
+            Print("Basket trail activated at profit ", DoubleToString(profit, 2));
          }
 
          if(g_trailActive)
@@ -747,12 +734,12 @@ void OnTick()
             const double trailStopProfit = g_trailPeakProfit - InpTrailDistanceMoney;
             if(profit <= trailStopProfit)
             {
-               Print("Basket trail hit | profit=", DoubleToString(profit, 2),
-                     " | peak=", DoubleToString(g_trailPeakProfit, 2),
-                     " | stop=", DoubleToString(trailStopProfit, 2));
+               Print("Basket trail hit. Profit=", DoubleToString(profit, 2),
+                     " Peak=", DoubleToString(g_trailPeakProfit, 2),
+                     " Stop=", DoubleToString(trailStopProfit, 2));
                if(!IsTradeAllowed())
                {
-                  Print("Basket trail wait | trade not allowed");
+                  Print("Basket trail reached but trade is not allowed now. Will retry on next tick.");
                   return;
                }
 
@@ -760,7 +747,7 @@ void OnTick()
                if(remain == 0)
                   ResetTrailState();
                else
-                  Print("Basket trail close partial | remain=", remain);
+                  Print("Basket trail close incomplete. Remaining positions=", remain);
                return;
             }
          }
@@ -771,13 +758,16 @@ void OnTick()
    {
       if(!g_maxPosWarnSent)
       {
-         SendPauseWarning(posCount, "Max positions reached");
+         SendPauseWarning(posCount, "Reached InpMaxPositions");
          g_maxPosWarnSent = true;
       }
       return;
    }
 
    if(!IsTradeAllowed())
+      return;
+
+   if(!SpreadOK(g_symbol))
       return;
 
    if(InpMinSecondsBetweenOrders > 0 && (TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
@@ -799,17 +789,13 @@ void OnTick()
 
    if(posCount == 0)
    {
-      if(!SpreadOK(g_symbol, InpMaxSpreadFirstEntryPips))
-         return;
-
-      // RSI filter is used only for normal first entry (not manual resume batch).
-      if(!g_manualBatchActive && !FirstEntryRsiOK())
+      if(!FirstEntryRsiOK())
          return;
 
       if(g_manualBatchActive)
-         Print("Open first entry | mode=MANUAL_RESUME | lot=", DoubleToString(lot, 2));
+         Print("Open initial buy using MANUAL resume | lot=", DoubleToString(lot, 2));
       else
-         Print("Open first entry | level=", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
+         Print("Open initial buy using level ", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
       OpenBuy(g_symbol, lot, "TableGridBuy");
       return;
    }
@@ -823,14 +809,11 @@ void OnTick()
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    if(bid <= (latest_price - gridPrice))
    {
-      if(!SpreadOK(g_symbol, InpMaxSpreadGridEntryPips))
-         return;
-
       if(g_manualBatchActive)
-         Print("Open grid entry | mode=MANUAL_RESUME | lot=", DoubleToString(lot, 2),
+         Print("Open grid buy using MANUAL resume | lot=", DoubleToString(lot, 2),
                " | gridPips=", DoubleToString(gridPips, 1));
       else
-         Print("Open grid entry | level=", (levelIndex + 1),
+         Print("Open grid buy using level ", (levelIndex + 1),
                " | lot=", DoubleToString(lot, 2),
                " | gridPips=", DoubleToString(gridPips, 1));
       OpenBuy(g_symbol, lot, "TableGridBuy");
