@@ -31,6 +31,7 @@ input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when pos
 input group "Risk & Entry"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
+input int    InpCooldownAfterCloseSeconds = 15;  // Cooldown after EA closes all positions
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
@@ -62,6 +63,7 @@ string g_symbol = "";
 bool   g_ready  = false;
 
 datetime g_lastTradeTime = 0;
+datetime g_lastCloseAllTime = 0;
 
 SLevel g_levels[];
 int    g_levelCount = 0;
@@ -208,7 +210,10 @@ int CloseAllBuyPositions(const string symbol, const long magic)
       }
    }
 
-   return CountBuyPositions(symbol, magic);
+   const int remain = CountBuyPositions(symbol, magic);
+   if(remain == 0)
+      g_lastCloseAllTime = TimeCurrent();
+   return remain;
 }
 
 bool SpreadOK(const string symbol, const double maxSpreadPips)
@@ -827,6 +832,11 @@ void OnTick()
    }
 
    if(!IsTradeAllowed())
+      return;
+
+   if(InpCooldownAfterCloseSeconds > 0 &&
+      g_lastCloseAllTime > 0 &&
+      (TimeCurrent() - g_lastCloseAllTime) < InpCooldownAfterCloseSeconds)
       return;
 
    if(InpMinSecondsBetweenOrders > 0 && (TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
