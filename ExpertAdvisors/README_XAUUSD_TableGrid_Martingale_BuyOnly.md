@@ -1,38 +1,74 @@
 # README - XAUUSD_TableGrid_Martingale_BuyOnly
 
-Ringkasan algoritma EA supaya cepat diingat.
+Ringkasan algoritma EA (versi terbaru).
 File utama: `ExpertAdvisors/XAUUSD_TableGrid_Martingale_BuyOnly.mq5`
 
 ## 1) Konsep Inti
 - EA khusus `BUY` untuk `XAUUSD` pada akun `Hedging`.
-- Lot dan jarak grid normal diambil dari CSV (`InpTableFile`).
-- Saat posisi mencapai `InpMaxPositions`, EA pause dan kirim warning.
-- Lanjut entry hanya lewat `Manual Resume` (batch tambahan).
+- Lot dan grid normal dari CSV (`InpTableFile`).
+- Ada mode `Manual Resume` untuk nambah batch posisi saat pause.
+- Ada proteksi close + cooldown + alert Telegram.
 
 ## 2) Alur OnTick
-1. Hitung `posCount` (jumlah buy aktif untuk kombinasi `symbol + magic`).
-2. Proses `Manual Resume`.
-3. Proses exit basket (`Basket TP` lalu `Basket Trailing`).
-4. Jika kena batas max posisi (dan bukan mode manual batch), kirim warning lalu pause.
-5. Jika boleh entry:
-- `posCount == 0` -> first entry.
-- `posCount > 0` -> grid entry dari posisi buy terakhir.
+1. Hitung `posCount` (buy aktif untuk `symbol + magic`).
+2. Jika mode close-lock aktif, fokus close sampai habis (tanpa entry baru).
+3. Proses `Manual Resume`.
+4. Proses exit basket (TP grid khusus / TP default / trailing sesuai rule).
+5. Cek pause max positions.
+6. Jika boleh entry, lanjut first entry atau grid entry.
 
-## 3) First Entry
-- Dieksekusi per tick (bukan menunggu candle close), tetapi data RSI pakai candle close.
-- Filter RSI opsional (`InpUseFirstEntryRsiFilter`).
-- Syarat RSI:
+## 3) Rule Exit (Paling Penting)
+Rule saat `posCount > 0`:
+- `Grid 1-3`: selalu pakai TP khusus:
+- `InpBasketTPGrid1Money`
+- `InpBasketTPGrid2Money`
+- `InpBasketTPGrid3Money`
+- `Grid >= 4`:
+- jika trailing aktif untuk grid tersebut -> pakai trailing.
+- jika trailing tidak aktif/di luar range -> pakai TP default (`InpBasketTPDefaultMoney`).
+
+Trailing aktif per-grid jika semua true:
+- `InpUseBasketTrail = true`
+- `InpTrailDistanceMoney > 0`
+- `posCount` berada di range `InpTrailGridFrom..InpTrailGridTo` (`InpTrailGridTo=0` berarti tanpa batas atas)
+
+## 4) Close Mode (A/B Backtest)
+Input:
+- `InpUseCloseLock`
+- `InpUsePriorityCloseOrder`
+
+Perilaku:
+- `InpUseCloseLock=true`
+- Saat TP/Trail trigger, EA lock close dulu sampai posisi habis, baru lanjut flow normal.
+- `InpUseCloseLock=false`
+- Mode close langsung per trigger (mendekati behavior lama).
+
+Urutan close:
+- `InpUsePriorityCloseOrder=true`
+- close `volume terbesar dulu`, lalu `profit terburuk`.
+- `InpUsePriorityCloseOrder=false`
+- close urutan legacy (index descending).
+
+## 5) Cooldown
+- `InpCooldownAfterCloseSeconds` aktif setelah semua posisi benar-benar sudah 0.
+- Timestamp cooldown: `g_lastCloseAllTime`.
+- Tujuan: mencegah re-entry terlalu cepat sesudah close-all.
+
+## 6) First Entry
+- Trigger per tick.
+- Spread filter first entry: `InpMaxSpreadFirstEntryPips`.
+- RSI first entry opsional (`InpUseFirstEntryRsiFilter`):
 - `RSI_now < InpRsiThreshold`
 - `(RSI_now - RSI_prev) >= InpRsiMinRise`
-- `RSI_now` = shift 1, `RSI_prev` = shift 2.
-- Saat `Manual Resume` aktif, filter RSI first-entry di-bypass.
+- RSI pakai candle close (`shift 1` vs `shift 2`).
+- Saat manual resume aktif, filter RSI first entry di-bypass.
 
-## 4) Filter Spread
-- `InpMaxSpreadFirstEntryPips` untuk first entry.
-- `InpMaxSpreadGridEntryPips` untuk grid entry.
-- Nilai `0` = filter nonaktif.
+## 7) Grid Entry
+- Grid trigger saat `bid <= latest_buy_open_price - gridPrice`.
+- Spread filter grid: `InpMaxSpreadGridEntryPips`.
+- Lot+grid dari CSV level sesuai jumlah posisi, atau last level jika melebihi tabel (`InpUseLastLevelIfExceeded`).
 
-## 5) Manual Resume Batch
+## 8) Manual Resume
 Input:
 - `InpManualResumeCycleId`
 - `InpManualResumeLot`
@@ -40,25 +76,32 @@ Input:
 - `InpManualResumeCount`
 
 Aturan:
-- Resume baru hanya jalan jika `InpManualResumeCycleId` naik.
-- Contoh naik valid: `0 -> 1 -> 2 -> 3`.
-- Saat aktif, lot+grid memakai parameter manual resume.
-- Jika jumlah tambahan sudah mencapai `InpManualResumeCount`, EA pause lagi dan kirim warning.
+- Resume baru hanya diproses jika `InpManualResumeCycleId` naik.
+- Batch selesai saat penambahan posisi mencapai `InpManualResumeCount`.
+- Setelah batch selesai, EA pause lagi dan kirim warning.
 
-## 6) Telegram Warning
-Trigger warning:
-- Menyentuh `InpMaxPositions`.
-- `Manual Resume` batch selesai.
+## 9) Floating Loss Alert Telegram
+Input:
+- `InpWarnOnFloatingLevels`
+- `InpFloatingLossLevels` (contoh: `5000,10000,20000,...`)
 
-Isi pesan (dipersingkat):
-- reason, account name, symbol, posisi `current/max`.
+Perilaku:
+- Alert kirim saat floating <= -level.
+- Tiap level dikirim sekali per siklus posisi.
+- Level otomatis sort ascending, nilai duplikat dibuang.
+- Jika input invalid, fallback ke default level.
+
+## 10) Telegram Warning
+Trigger utama:
+- Max positions reached.
+- Manual resume batch completed.
+- Floating loss level touched (jika diaktifkan).
 
 Catatan:
-- Token/chat Telegram hardcoded di source (`TG_BOT_TOKEN`, `TG_CHAT_ID`).
-- Tidak muncul di EA Properties/.set.
-- Tetap wajib aktifkan WebRequest: `https://api.telegram.org`.
+- Token/chat hardcoded: `TG_BOT_TOKEN`, `TG_CHAT_ID`.
+- Aktifkan WebRequest URL: `https://api.telegram.org`.
 
-## 7) CSV Level
+## 11) CSV Level
 Format:
 ```csv
 lot,gridPips
@@ -67,27 +110,19 @@ lot,gridPips
 0.02,30
 ```
 
-Lokasi file:
-- `InpUseCommonFiles=false` -> `MQL5/Files/...` (live), `MQL5/Tester/Files/...` (tester).
-- `InpUseCommonFiles=true` -> `Terminal/Common/Files/...`.
+Lokasi:
+- `InpUseCommonFiles=false`: `MQL5/Files/...` (live), `MQL5/Tester/Files/...` (tester).
+- `InpUseCommonFiles=true`: `Terminal/Common/Files/...`.
 
-## 8) Checklist Operasional
-1. Pastikan CSV kebaca saat init.
-2. Pastikan WebRequest Telegram aktif.
-3. Saat pause karena max posisi:
-- isi parameter manual resume,
-- lalu naikkan `InpManualResumeCycleId`.
-4. Pantau panel chart `Manual Cycle Ref`.
+## 12) Set Replikasi Mode Lama
+Untuk hasil mendekati versi lama (`..._20260415`):
+- `InpUseCloseLock=false`
+- `InpUsePriorityCloseOrder=false`
+- `InpTrailGridFrom=4`
+- `InpTrailGridTo=1000000`
+- `InpBasketTPDefaultMoney=0`
+- `InpWarnOnFloatingLevels=false`
 
-## 9) Contoh Parameter Awal
-- `InpUseFirstEntryRsiFilter=true`
-- `InpRsiPeriod=14`
-- `InpRsiThreshold=50`
-- `InpRsiMinRise=1.0`
-- `InpMaxSpreadFirstEntryPips=3`
-- `InpMaxSpreadGridEntryPips=5`
-- `InpUseBasketTrail=true`
-
-## 10) Risiko
-- Strategi ini tetap termasuk grid/martingale buy-only.
-- Gunakan lot konservatif, batas posisi yang masuk akal, dan wajib validasi di backtest + forward test.
+## 13) Risiko
+- Ini tetap strategi grid/martingale buy-only.
+- Gunakan lot konservatif, kontrol jumlah posisi, dan validasi di backtest + forward test.

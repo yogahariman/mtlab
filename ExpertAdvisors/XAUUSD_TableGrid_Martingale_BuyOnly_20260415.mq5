@@ -32,8 +32,6 @@ input group "Risk & Entry"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
 input int    InpCooldownAfterCloseSeconds = 60;  // Cooldown after EA closes all positions
-input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
-input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
@@ -43,20 +41,16 @@ input double InpRsiThreshold            = 50.0;   // First entry allowed only if
 input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev >= value
 
 input group "Exit & Trailing"
-input double InpBasketTPDefaultMoney    = 15;   // Fallback basket TP when no grid-specific TP applies
-input double InpBasketTPGrid1Money      = 1.5;  // Basket TP when grid count is 1
-input double InpBasketTPGrid2Money      = 3.5;  // Basket TP when grid count is 2
-input double InpBasketTPGrid3Money      = 7.0;  // Basket TP when grid count is 3
+input double InpBasketTPMoney           = 0;   // Close all when total profit >= value
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
-input int    InpTrailGridTo             = 15;     // Trailing ends at this grid count (0=no upper limit)
 input double InpTrailStartMoney         = 20.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
+input double InpGrid1TPMoney            = 1.5;    // Forced basket TP when grid count is 1
+input double InpGrid2TPMoney            = 3.5;    // Forced basket TP when grid count is 2
+input double InpGrid3TPMoney            = 7.0;    // Forced basket TP when grid count is 3
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
-input bool   InpWarnOnFloatingLevels    = true;   // Send Telegram warning when floating loss hits configured levels
-input string InpFloatingLossLevels      = "5000,10000,20000,30000,50000,70000,90000"; // Floating loss alert levels (comma-separated)
 
 struct SLevel
 {
@@ -85,11 +79,6 @@ int    g_manualBatchTargetCount = 0;
 double g_manualBatchLot = 0.0;
 double g_manualBatchGridPips = 0.0;
 int    g_rsiHandle = INVALID_HANDLE;
-double g_floatingAlertLevels[];
-bool   g_floatingAlertSent[];
-bool   g_closeLockActive = false;
-int    g_closeLockLastRemain = -1;
-bool   g_closeLockWaitTradePrinted = false;
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
 const string TG_BOT_TOKEN = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";
@@ -204,103 +193,20 @@ double TotalProfit(const string symbol, const long magic)
 
 int CloseAllBuyPositions(const string symbol, const long magic)
 {
-   if(InpUsePriorityCloseOrder)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      // Build close queue:
-      // 1) larger volume first (reduce exposure faster)
-      // 2) if equal volume, worse profit first
-      ulong tickets[];
-      double vols[];
-      double profits[];
-      int q = 0;
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
 
-      const int total = PositionsTotal();
-      for(int i = 0; i < total; i++)
+      if(!trade.PositionClose(ticket))
       {
-         const ulong ticket = PositionGetTicket(i);
-         if(ticket == 0) continue;
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
-
-         const int n = q + 1;
-         ArrayResize(tickets, n);
-         ArrayResize(vols, n);
-         ArrayResize(profits, n);
-         tickets[q] = ticket;
-         vols[q] = PositionGetDouble(POSITION_VOLUME);
-         profits[q] = PositionGetDouble(POSITION_PROFIT);
-         q = n;
-      }
-
-      // Simple in-place sort for queue size used in grid EA.
-      for(int i = 0; i < q - 1; i++)
-      {
-         int best = i;
-         for(int j = i + 1; j < q; j++)
-         {
-            bool better = false;
-            if(vols[j] > vols[best])
-               better = true;
-            else if(vols[j] == vols[best] && profits[j] < profits[best])
-               better = true;
-
-            if(better)
-               best = j;
-         }
-
-         if(best != i)
-         {
-            const ulong tTicket = tickets[i];
-            tickets[i] = tickets[best];
-            tickets[best] = tTicket;
-
-            const double tVol = vols[i];
-            vols[i] = vols[best];
-            vols[best] = tVol;
-
-            const double tProfit = profits[i];
-            profits[i] = profits[best];
-            profits[best] = tProfit;
-         }
-      }
-
-      for(int i = 0; i < q; i++)
-      {
-         const ulong ticket = tickets[i];
-         if(ticket == 0) continue;
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
-
-         if(!trade.PositionClose(ticket))
-         {
-            Print("Close fail | ticket=", (string)ticket,
-                  " | retcode=", (string)trade.ResultRetcode(),
-                  " | desc=", trade.ResultRetcodeDescription());
-         }
-      }
-   }
-   else
-   {
-      // Legacy close order (index descending) for A/B testing.
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         const ulong ticket = PositionGetTicket(i);
-         if(ticket == 0) continue;
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
-
-         if(!trade.PositionClose(ticket))
-         {
-            Print("Close fail | ticket=", (string)ticket,
-                  " | retcode=", (string)trade.ResultRetcode(),
-                  " | desc=", trade.ResultRetcodeDescription());
-         }
+         Print("Close fail | ticket=", (string)ticket,
+               " | retcode=", (string)trade.ResultRetcode(),
+               " | desc=", trade.ResultRetcodeDescription());
       }
    }
 
@@ -439,178 +345,6 @@ void ResetTrailState()
 {
    g_trailActive = false;
    g_trailPeakProfit = 0.0;
-}
-
-void ActivateCloseLock(const string reason)
-{
-   if(!g_closeLockActive)
-      Print("Close lock ON | reason=", reason);
-
-   g_closeLockActive = true;
-   g_closeLockLastRemain = -1;
-   g_closeLockWaitTradePrinted = false;
-}
-
-void DeactivateCloseLock()
-{
-   if(g_closeLockActive)
-      Print("Close lock OFF | all positions closed");
-
-   g_closeLockActive = false;
-   g_closeLockLastRemain = -1;
-   g_closeLockWaitTradePrinted = false;
-}
-
-void SetDefaultFloatingAlertLevels()
-{
-   ArrayResize(g_floatingAlertLevels, 7);
-   g_floatingAlertLevels[0] = 5000.0;
-   g_floatingAlertLevels[1] = 10000.0;
-   g_floatingAlertLevels[2] = 20000.0;
-   g_floatingAlertLevels[3] = 30000.0;
-   g_floatingAlertLevels[4] = 50000.0;
-   g_floatingAlertLevels[5] = 70000.0;
-   g_floatingAlertLevels[6] = 90000.0;
-}
-
-bool LoadFloatingAlertLevelsFromInput(const string rawInput)
-{
-   string text = rawInput;
-   StringTrimLeft(text);
-   StringTrimRight(text);
-   if(StringLen(text) == 0)
-      return false;
-
-   StringReplace(text, ";", ",");
-   StringReplace(text, "|", ",");
-   StringReplace(text, " ", "");
-
-   string parts[];
-   const int partCount = StringSplit(text, ',', parts);
-   if(partCount <= 0)
-      return false;
-
-   ArrayResize(g_floatingAlertLevels, 0);
-   int validCount = 0;
-   for(int i = 0; i < partCount; i++)
-   {
-      string token = parts[i];
-      StringTrimLeft(token);
-      StringTrimRight(token);
-      if(StringLen(token) == 0)
-         continue;
-
-      const double level = StringToDouble(token);
-      if(level <= 0.0)
-         continue;
-
-      const int newSize = validCount + 1;
-      ArrayResize(g_floatingAlertLevels, newSize);
-      g_floatingAlertLevels[validCount] = level;
-      validCount = newSize;
-   }
-
-   if(validCount <= 0)
-   {
-      ArrayResize(g_floatingAlertLevels, 0);
-      return false;
-   }
-
-   // Ensure ascending order so alerts trigger from smaller loss to larger loss.
-   ArraySort(g_floatingAlertLevels);
-
-   // Remove duplicate levels to avoid duplicate alerts at the same threshold.
-   int uniqueCount = 0;
-   for(int i = 0; i < validCount; i++)
-   {
-      if(i == 0 || g_floatingAlertLevels[i] != g_floatingAlertLevels[i - 1])
-      {
-         g_floatingAlertLevels[uniqueCount] = g_floatingAlertLevels[i];
-         uniqueCount++;
-      }
-   }
-   ArrayResize(g_floatingAlertLevels, uniqueCount);
-   return true;
-}
-
-void ResetFloatingAlertState()
-{
-   const int n = ArraySize(g_floatingAlertLevels);
-   ArrayResize(g_floatingAlertSent, n);
-   for(int i = 0; i < n; i++)
-      g_floatingAlertSent[i] = false;
-}
-
-void CheckFloatingLossAlerts(const double floatingProfit, const int posCount)
-{
-   if(!InpWarnOnFloatingLevels)
-      return;
-   if(posCount <= 0)
-      return;
-
-   const int n = ArraySize(g_floatingAlertLevels);
-   if(ArraySize(g_floatingAlertSent) != n)
-      ResetFloatingAlertState();
-
-   for(int i = 0; i < n; i++)
-   {
-      if(g_floatingAlertSent[i])
-         continue;
-
-      const double level = g_floatingAlertLevels[i];
-      if(floatingProfit <= -level)
-      {
-         const string msg =
-            "Floating Alert\n" +
-            "Acct: " + AccountInfoString(ACCOUNT_NAME) + "\n" +
-            "Sym: " + g_symbol + "\n" +
-            "Floating: " + DoubleToString(floatingProfit, 2) + "\n" +
-            "Level: -" + DoubleToString(level, 0);
-
-         Print(msg);
-         SendTelegramMessage(msg);
-         g_floatingAlertSent[i] = true;
-      }
-   }
-}
-
-bool ProcessCloseLock(const int posCount)
-{
-   if(!InpUseCloseLock)
-      return false;
-   if(!g_closeLockActive)
-      return false;
-
-   if(posCount <= 0)
-   {
-      DeactivateCloseLock();
-      return true;
-   }
-
-   if(!IsTradeAllowed())
-   {
-      if(!g_closeLockWaitTradePrinted)
-      {
-         Print("Close lock wait | trade not allowed");
-         g_closeLockWaitTradePrinted = true;
-      }
-      return true;
-   }
-
-   g_closeLockWaitTradePrinted = false;
-   const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-   if(remain == 0)
-   {
-      ResetTrailState();
-      DeactivateCloseLock();
-   }
-   else if(remain != g_closeLockLastRemain)
-   {
-      Print("Close lock running | remain=", remain);
-      g_closeLockLastRemain = remain;
-   }
-
-   return true;
 }
 
 void DeactivateManualBatch()
@@ -879,7 +613,7 @@ int OnInit()
    else
       g_maxPositions = InpMaxPositions;
 
-   if(InpBasketTPDefaultMoney <= 0.0)
+   if(InpBasketTPMoney <= 0.0)
       Print("Info | basket_tp=OFF");
    if(InpUseBasketTrail)
    {
@@ -889,17 +623,9 @@ int OnInit()
          Print("Warn | trail_distance<=0");
    }
 
-   if(!LoadFloatingAlertLevelsFromInput(InpFloatingLossLevels))
-   {
-      SetDefaultFloatingAlertLevels();
-      Print("Warn | floating_levels invalid -> fallback to default");
-   }
-
    trade.SetExpertMagicNumber(InpMagic);
    g_ready = true;
    ResetTrailState();
-   ResetFloatingAlertState();
-   DeactivateCloseLock();
    DeactivateManualBatch();
    g_manualPausedByBatch = false;
    // Prevent auto-resume on EA restart/reattach when CycleId was already set.
@@ -913,17 +639,13 @@ int OnInit()
          " | ManualCycleId: ", InpManualResumeCycleId,
          " | FirstEntryRSI: ", (InpUseFirstEntryRsiFilter ? "true" : "false"),
          " | WarnPause: ", (InpWarnOnMaxPositions ? "true" : "false"),
-         " | UseCloseLock: ", (InpUseCloseLock ? "true" : "false"),
-         " | PriorityCloseOrder: ", (InpUsePriorityCloseOrder ? "true" : "false"),
          " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
          " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
          " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
-         " | Basket TP default: ", DoubleToString(InpBasketTPDefaultMoney, 2),
+         " | Basket TP money: ", DoubleToString(InpBasketTPMoney, 2),
          " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
-         " | Trail grid range: ", (string)InpTrailGridFrom, "-", (InpTrailGridTo == 0 ? "INF" : (string)InpTrailGridTo),
          " | Trail start: ", DoubleToString(InpTrailStartMoney, 2),
          " | Trail distance: ", DoubleToString(InpTrailDistanceMoney, 2),
-         " | FloatingAlerts: ", (InpWarnOnFloatingLevels ? "true" : "false"),
          " | Max positions: ", g_maxPositions);
 
    if(InpWarnOnMaxPositions)
@@ -960,15 +682,10 @@ void OnTick()
    if(posCount <= 0)
    {
       ResetTrailState();
-      ResetFloatingAlertState();
-      DeactivateCloseLock();
       DeactivateManualBatch();
       g_manualPausedByBatch = false;
       g_maxPosWarnSent = false;
    }
-
-   if(ProcessCloseLock(posCount))
-      return;
 
    TryActivateManualBatch(posCount);
    UpdateCycleReferenceComment(posCount);
@@ -1000,48 +717,31 @@ void OnTick()
    if(posCount > 0)
    {
       const double profit = TotalProfit(g_symbol, InpMagic);
-      CheckFloatingLossAlerts(profit, posCount);
       double forcedTpMoney = 0.0;
       bool forceTrailOff = false;
-      const bool trailRangeValid = (InpTrailGridFrom > 0 && (InpTrailGridTo == 0 || InpTrailGridTo >= InpTrailGridFrom));
-      const bool trailGridInRange =
-         trailRangeValid &&
-         posCount >= InpTrailGridFrom &&
-         (InpTrailGridTo == 0 || posCount <= InpTrailGridTo);
 
       // Requested behavior:
       // - Grid 1..3: trailing OFF, basket TP fixed to 2/4/8
       // - Grid 4+: trailing can run normally
       if(posCount == 1)
       {
-         forcedTpMoney = InpBasketTPGrid1Money;
+         forcedTpMoney = InpGrid1TPMoney;
          forceTrailOff = true;
       }
       else if(posCount == 2)
       {
-         forcedTpMoney = InpBasketTPGrid2Money;
+         forcedTpMoney = InpGrid2TPMoney;
          forceTrailOff = true;
       }
       else if(posCount == 3)
       {
-         forcedTpMoney = InpBasketTPGrid3Money;
+         forcedTpMoney = InpGrid3TPMoney;
          forceTrailOff = true;
       }
-
-      const bool useTrailForThisGrid =
-         (!forceTrailOff &&
-          InpUseBasketTrail &&
-          trailGridInRange &&
-          InpTrailDistanceMoney > 0.0);
 
       if(forceTrailOff && g_trailActive)
       {
          Print("Basket trail OFF | reason=grid<=3");
-         ResetTrailState();
-      }
-      else if(!forceTrailOff && g_trailActive && !useTrailForThisGrid)
-      {
-         Print("Basket trail OFF | reason=grid_outside_trail_range");
          ResetTrailState();
       }
 
@@ -1050,58 +750,41 @@ void OnTick()
          Print("Forced TP hit | grid=", posCount,
                " | profit=", DoubleToString(profit, 2),
                " | target=", DoubleToString(forcedTpMoney, 2));
-         if(InpUseCloseLock)
+         if(!IsTradeAllowed())
          {
-            ActivateCloseLock("forced_tp");
-            ProcessCloseLock(posCount);
+            Print("Forced TP wait | trade not allowed");
+            return;
          }
-         else
-         {
-            if(!IsTradeAllowed())
-            {
-               Print("Forced TP wait | trade not allowed");
-               return;
-            }
 
-            const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-            if(remain == 0)
-               ResetTrailState();
-            else
-               Print("Forced TP close partial | remain=", remain);
-         }
+         const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+         if(remain == 0)
+            ResetTrailState();
+         else
+            Print("Forced TP close partial | remain=", remain);
          return;
       }
 
-      // Fixed basket TP default is used only when trailing is not active for this grid.
-      if(!forceTrailOff && !useTrailForThisGrid &&
-         InpBasketTPDefaultMoney > 0.0 && profit >= InpBasketTPDefaultMoney)
+      // Optional fixed basket TP
+      if(!forceTrailOff && InpBasketTPMoney > 0.0 && profit >= InpBasketTPMoney)
       {
          Print("Basket TP hit | profit=", DoubleToString(profit, 2),
-               " | target=", DoubleToString(InpBasketTPDefaultMoney, 2));
-         if(InpUseCloseLock)
+               " | target=", DoubleToString(InpBasketTPMoney, 2));
+         if(!IsTradeAllowed())
          {
-            ActivateCloseLock("basket_tp");
-            ProcessCloseLock(posCount);
+            Print("Basket TP wait | trade not allowed");
+            return;
          }
-         else
-         {
-            if(!IsTradeAllowed())
-            {
-               Print("Basket TP wait | trade not allowed");
-               return;
-            }
 
-            const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-            if(remain == 0)
-               ResetTrailState();
-            else
-               Print("Basket TP close partial | remain=", remain);
-         }
+         const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+         if(remain == 0)
+            ResetTrailState();
+         else
+            Print("Basket TP close partial | remain=", remain);
          return;
       }
 
-      // Trailing profit is used only for configured trail grid range.
-      if(useTrailForThisGrid)
+      // Optional basket trailing profit
+      if(!forceTrailOff && InpUseBasketTrail && InpTrailDistanceMoney > 0.0)
       {
          if(!g_trailActive && profit >= InpTrailStartMoney)
          {
@@ -1121,25 +804,17 @@ void OnTick()
                Print("Basket trail hit | profit=", DoubleToString(profit, 2),
                      " | peak=", DoubleToString(g_trailPeakProfit, 2),
                      " | stop=", DoubleToString(trailStopProfit, 2));
-               if(InpUseCloseLock)
+               if(!IsTradeAllowed())
                {
-                  ActivateCloseLock("basket_trail");
-                  ProcessCloseLock(posCount);
+                  Print("Basket trail wait | trade not allowed");
+                  return;
                }
-               else
-               {
-                  if(!IsTradeAllowed())
-                  {
-                     Print("Basket trail wait | trade not allowed");
-                     return;
-                  }
 
-                  const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
-                  if(remain == 0)
-                     ResetTrailState();
-                  else
-                     Print("Basket trail close partial | remain=", remain);
-               }
+               const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+               if(remain == 0)
+                  ResetTrailState();
+               else
+                  Print("Basket trail close partial | remain=", remain);
                return;
             }
          }
