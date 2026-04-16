@@ -51,6 +51,8 @@ input double InpGrid3TPMoney            = 7.0;    // Forced basket TP when grid 
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
+input bool   InpWarnOnFloatingLevels    = true;   // Send Telegram warning when floating loss hits configured levels
+input string InpFloatingLossLevels      = "5000,10000,20000,30000,50000,70000,90000"; // Floating loss alert levels (comma-separated)
 
 struct SLevel
 {
@@ -79,6 +81,8 @@ int    g_manualBatchTargetCount = 0;
 double g_manualBatchLot = 0.0;
 double g_manualBatchGridPips = 0.0;
 int    g_rsiHandle = INVALID_HANDLE;
+double g_floatingAlertLevels[];
+bool   g_floatingAlertSent[];
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
 const string TG_BOT_TOKEN = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";
@@ -345,6 +349,119 @@ void ResetTrailState()
 {
    g_trailActive = false;
    g_trailPeakProfit = 0.0;
+}
+
+void SetDefaultFloatingAlertLevels()
+{
+   ArrayResize(g_floatingAlertLevels, 7);
+   g_floatingAlertLevels[0] = 5000.0;
+   g_floatingAlertLevels[1] = 10000.0;
+   g_floatingAlertLevels[2] = 20000.0;
+   g_floatingAlertLevels[3] = 30000.0;
+   g_floatingAlertLevels[4] = 50000.0;
+   g_floatingAlertLevels[5] = 70000.0;
+   g_floatingAlertLevels[6] = 90000.0;
+}
+
+bool LoadFloatingAlertLevelsFromInput(const string rawInput)
+{
+   string text = rawInput;
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   if(StringLen(text) == 0)
+      return false;
+
+   StringReplace(text, ";", ",");
+   StringReplace(text, "|", ",");
+   StringReplace(text, " ", "");
+
+   string parts[];
+   const int partCount = StringSplit(text, ',', parts);
+   if(partCount <= 0)
+      return false;
+
+   ArrayResize(g_floatingAlertLevels, 0);
+   int validCount = 0;
+   for(int i = 0; i < partCount; i++)
+   {
+      string token = parts[i];
+      StringTrimLeft(token);
+      StringTrimRight(token);
+      if(StringLen(token) == 0)
+         continue;
+
+      const double level = StringToDouble(token);
+      if(level <= 0.0)
+         continue;
+
+      const int newSize = validCount + 1;
+      ArrayResize(g_floatingAlertLevels, newSize);
+      g_floatingAlertLevels[validCount] = level;
+      validCount = newSize;
+   }
+
+   if(validCount <= 0)
+   {
+      ArrayResize(g_floatingAlertLevels, 0);
+      return false;
+   }
+
+   // Ensure ascending order so alerts trigger from smaller loss to larger loss.
+   ArraySort(g_floatingAlertLevels);
+
+   // Remove duplicate levels to avoid duplicate alerts at the same threshold.
+   int uniqueCount = 0;
+   for(int i = 0; i < validCount; i++)
+   {
+      if(i == 0 || g_floatingAlertLevels[i] != g_floatingAlertLevels[i - 1])
+      {
+         g_floatingAlertLevels[uniqueCount] = g_floatingAlertLevels[i];
+         uniqueCount++;
+      }
+   }
+   ArrayResize(g_floatingAlertLevels, uniqueCount);
+   return true;
+}
+
+void ResetFloatingAlertState()
+{
+   const int n = ArraySize(g_floatingAlertLevels);
+   ArrayResize(g_floatingAlertSent, n);
+   for(int i = 0; i < n; i++)
+      g_floatingAlertSent[i] = false;
+}
+
+void CheckFloatingLossAlerts(const double floatingProfit, const int posCount)
+{
+   if(!InpWarnOnFloatingLevels)
+      return;
+   if(posCount <= 0)
+      return;
+
+   const int n = ArraySize(g_floatingAlertLevels);
+   if(ArraySize(g_floatingAlertSent) != n)
+      ResetFloatingAlertState();
+
+   for(int i = 0; i < n; i++)
+   {
+      if(g_floatingAlertSent[i])
+         continue;
+
+      const double level = g_floatingAlertLevels[i];
+      if(floatingProfit <= -level)
+      {
+         const string msg =
+            "Floating Alert\n" +
+            "Acct: " + AccountInfoString(ACCOUNT_NAME) + "\n" +
+            "Sym: " + g_symbol + "\n" +
+            "Floating: " + DoubleToString(floatingProfit, 2) + "\n" +
+            "Level: -" + DoubleToString(level, 0);
+
+         Print(msg);
+         SendTelegramMessage(msg);
+         g_floatingAlertSent[i] = true;
+      }
+   }
 }
 
 void DeactivateManualBatch()
@@ -623,9 +740,16 @@ int OnInit()
          Print("Warn | trail_distance<=0");
    }
 
+   if(!LoadFloatingAlertLevelsFromInput(InpFloatingLossLevels))
+   {
+      SetDefaultFloatingAlertLevels();
+      Print("Warn | floating_levels invalid -> fallback to default");
+   }
+
    trade.SetExpertMagicNumber(InpMagic);
    g_ready = true;
    ResetTrailState();
+   ResetFloatingAlertState();
    DeactivateManualBatch();
    g_manualPausedByBatch = false;
    // Prevent auto-resume on EA restart/reattach when CycleId was already set.
@@ -646,6 +770,7 @@ int OnInit()
          " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
          " | Trail start: ", DoubleToString(InpTrailStartMoney, 2),
          " | Trail distance: ", DoubleToString(InpTrailDistanceMoney, 2),
+         " | FloatingAlerts: ", (InpWarnOnFloatingLevels ? "true" : "false"),
          " | Max positions: ", g_maxPositions);
 
    if(InpWarnOnMaxPositions)
@@ -682,6 +807,7 @@ void OnTick()
    if(posCount <= 0)
    {
       ResetTrailState();
+      ResetFloatingAlertState();
       DeactivateManualBatch();
       g_manualPausedByBatch = false;
       g_maxPosWarnSent = false;
@@ -717,6 +843,7 @@ void OnTick()
    if(posCount > 0)
    {
       const double profit = TotalProfit(g_symbol, InpMagic);
+      CheckFloatingLossAlerts(profit, posCount);
       double forcedTpMoney = 0.0;
       bool forceTrailOff = false;
 
