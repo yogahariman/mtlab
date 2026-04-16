@@ -34,6 +34,10 @@ input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
 input int    InpCooldownAfterCloseSeconds = 60;  // Cooldown after EA closes all positions
 input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
 input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
+input bool   InpUseAsyncClose           = true;   // Send close requests asynchronously for faster batch close
+input int    InpCloseDeviationPoints    = 300;    // Max deviation in points for close requests (<=0 uses platform default)
+input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in one run (keep 1 for async burst)
+input int    InpCloseLockTimerMs        = 100;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
@@ -50,7 +54,7 @@ input double InpBasketTPGrid3Money      = 7.0;  // Basket TP when grid count is 
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
 input int    InpTrailGridTo             = 15;     // Trailing ends at this grid count (0=no upper limit)
-input double InpTrailStartMoney         = 20.0;   // Activate trailing when basket profit >= value
+input double InpTrailStartMoney         = 18.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
 
 input group "Telegram Alerts"
@@ -204,6 +208,13 @@ double TotalProfit(const string symbol, const long magic)
 
 int CloseAllBuyPositions(const string symbol, const long magic)
 {
+   const bool useCustomDeviation = (InpCloseDeviationPoints > 0);
+   const ulong closeDeviation = (useCustomDeviation ? (ulong)InpCloseDeviationPoints : 0);
+   const bool useAsyncClose = InpUseAsyncClose;
+
+   if(useAsyncClose)
+      trade.SetAsyncMode(true);
+
    if(InpUsePriorityCloseOrder)
    {
       // Build close queue:
@@ -275,7 +286,10 @@ int CloseAllBuyPositions(const string symbol, const long magic)
          if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
          if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
 
-         if(!trade.PositionClose(ticket))
+         const bool closeOk = (useCustomDeviation ?
+                               trade.PositionClose(ticket, closeDeviation) :
+                               trade.PositionClose(ticket));
+         if(!closeOk)
          {
             Print("Close fail | ticket=", (string)ticket,
                   " | retcode=", (string)trade.ResultRetcode(),
@@ -295,7 +309,10 @@ int CloseAllBuyPositions(const string symbol, const long magic)
          if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
          if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
 
-         if(!trade.PositionClose(ticket))
+         const bool closeOk = (useCustomDeviation ?
+                               trade.PositionClose(ticket, closeDeviation) :
+                               trade.PositionClose(ticket));
+         if(!closeOk)
          {
             Print("Close fail | ticket=", (string)ticket,
                   " | retcode=", (string)trade.ResultRetcode(),
@@ -304,9 +321,33 @@ int CloseAllBuyPositions(const string symbol, const long magic)
       }
    }
 
+   if(useAsyncClose)
+      trade.SetAsyncMode(false);
+
    const int remain = CountBuyPositions(symbol, magic);
    if(remain == 0)
       g_lastCloseAllTime = TimeCurrent();
+   return remain;
+}
+
+int CloseAllBuyPositionsWithRetries(const string symbol, const long magic, const int maxAttempts)
+{
+   int attempts = maxAttempts;
+   if(attempts <= 0)
+      attempts = 1;
+   if(InpUseAsyncClose && attempts > 1)
+      attempts = 1;
+
+   int remain = CountBuyPositions(symbol, magic);
+   int prevRemain = remain + 1;
+   for(int attempt = 0; attempt < attempts && remain > 0; attempt++)
+   {
+      remain = CloseAllBuyPositions(symbol, magic);
+      if(remain >= prevRemain)
+         break;
+      prevRemain = remain;
+   }
+
    return remain;
 }
 
@@ -598,7 +639,7 @@ bool ProcessCloseLock(const int posCount)
    }
 
    g_closeLockWaitTradePrinted = false;
-   const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+   const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
    if(remain == 0)
    {
       ResetTrailState();
@@ -906,6 +947,12 @@ int OnInit()
    g_lastAppliedManualCycleId = InpManualResumeCycleId;
    g_maxPosWarnSent = false;
 
+   if(InpCloseLockTimerMs > 0)
+   {
+      if(!EventSetMillisecondTimer(InpCloseLockTimerMs))
+         Print("Warn | timer setup failed | ms=", InpCloseLockTimerMs);
+   }
+
    Print("EA init OK | Symbol=", g_symbol,
          " | Levels: ", g_levelCount,
          " | CSV: ", InpTableFile,
@@ -915,6 +962,10 @@ int OnInit()
          " | WarnPause: ", (InpWarnOnMaxPositions ? "true" : "false"),
          " | UseCloseLock: ", (InpUseCloseLock ? "true" : "false"),
          " | PriorityCloseOrder: ", (InpUsePriorityCloseOrder ? "true" : "false"),
+         " | UseAsyncClose: ", (InpUseAsyncClose ? "true" : "false"),
+         " | CloseDeviationPoints: ", (string)InpCloseDeviationPoints,
+         " | CloseAttemptsPerRun: ", (string)InpCloseAttemptsPerRun,
+         " | CloseLockTimerMs: ", (string)InpCloseLockTimerMs,
          " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
          " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
          " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
@@ -940,11 +991,26 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
+
    if(g_rsiHandle != INVALID_HANDLE)
    {
       IndicatorRelease(g_rsiHandle);
       g_rsiHandle = INVALID_HANDLE;
    }
+}
+
+void OnTimer()
+{
+   if(!g_ready)
+      return;
+   if(!InpUseCloseLock)
+      return;
+   if(!g_closeLockActive)
+      return;
+
+   const int posCount = CountBuyPositions(g_symbol, InpMagic);
+   ProcessCloseLock(posCount);
 }
 
 void OnTick()
@@ -959,6 +1025,11 @@ void OnTick()
 
    if(posCount <= 0)
    {
+      // In async close mode, the last close can complete after close requests are sent.
+      // Record close-all time here so cooldown still applies before any new entry.
+      if(g_closeLockActive)
+         g_lastCloseAllTime = TimeCurrent();
+
       ResetTrailState();
       ResetFloatingAlertState();
       DeactivateCloseLock();
@@ -1063,7 +1134,7 @@ void OnTick()
                return;
             }
 
-            const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
             else
@@ -1091,7 +1162,7 @@ void OnTick()
                return;
             }
 
-            const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
             else
@@ -1134,7 +1205,7 @@ void OnTick()
                      return;
                   }
 
-                  const int remain = CloseAllBuyPositions(g_symbol, InpMagic);
+                  const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
                   if(remain == 0)
                      ResetTrailState();
                   else
