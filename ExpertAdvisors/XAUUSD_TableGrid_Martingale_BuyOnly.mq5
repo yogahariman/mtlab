@@ -3,7 +3,7 @@
 //| Buy-only table-driven grid EA for XAUUSD (MT5 Hedging)               |
 // Setting Telegram                                                      |
 // Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
-// tambahkan https://api.telegram.org
+// https://api.telegram.org
 //+----------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
@@ -11,6 +11,12 @@
 #property strict
 
 #include <Trade/Trade.mqh>
+
+enum EFirstEntryMaType
+{
+   MA_SIMPLE = 0,
+   MA_EXPONENTIAL = 1
+};
 
 input group "General"
 input long   InpMagic                   = 260414; // Magic number
@@ -28,10 +34,10 @@ input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
 
-input group "Risk & Entry"
+input group "Risk & Execution"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 1;     // Min delay between orders
-input int    InpCooldownAfterCloseSeconds = 60;  // Cooldown after EA closes all positions
+input int    InpCooldownAfterCloseSeconds = 0;   // Cooldown after EA closes all positions (0=disabled)
 input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
 input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
 input bool   InpUseAsyncClose           = true;   // Send close requests asynchronously for faster batch close
@@ -40,8 +46,14 @@ input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in on
 input int    InpCloseLockTimerMs        = 100;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
+
+input group "First Entry Filters"
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
-input ENUM_TIMEFRAMES InpRsiTimeframe   = PERIOD_CURRENT; // RSI timeframe
+input bool   InpUseFirstEntryMaFilter   = true;   // Enable MA filter for first entry
+input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
+input bool   InpUseFirstEntryBullishCandle = false; // First entry: previous candle must be bullish
+input int    InpFirstEntryMaPeriod      = 5;      // First entry MA period
+input EFirstEntryMaType InpFirstEntryMaType = MA_EXPONENTIAL; // MA type: simple/exponential
 input int    InpRsiPeriod               = 14;     // RSI period
 input double InpRsiThreshold            = 50.0;   // First entry allowed only if RSI < threshold
 input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev >= value
@@ -53,14 +65,14 @@ input double InpBasketTPGrid2Money      = 3.5;  // Basket TP when grid count is 
 input double InpBasketTPGrid3Money      = 7.0;  // Basket TP when grid count is 3
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
-input int    InpTrailGridTo             = 15;     // Trailing ends at this grid count (0=no upper limit)
+input int    InpTrailGridTo             = 1000;     // Trailing ends at this grid count (0=no upper limit)
 input double InpTrailStartMoney         = 18.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops from peak by this value
 
 input group "Telegram Alerts"
-input bool   InpWarnOnMaxPositions      = true;   // Send Telegram warning when max positions is reached
+input bool   InpWarnOnMaxPositions      = false;   // Send Telegram warning when max positions is reached
 input bool   InpWarnOnFloatingLevels    = true;   // Send Telegram warning when floating loss hits configured levels
-input string InpFloatingLossLevels      = "5000,10000,20000,30000,50000,70000,90000"; // Floating loss alert levels (comma-separated)
+input string InpFloatingLossLevels      = "1000,2000"; // Floating loss alert levels (comma-separated)
 
 struct SLevel
 {
@@ -89,6 +101,7 @@ int    g_manualBatchTargetCount = 0;
 double g_manualBatchLot = 0.0;
 double g_manualBatchGridPips = 0.0;
 int    g_rsiHandle = INVALID_HANDLE;
+int    g_maHandle = INVALID_HANDLE;
 double g_floatingAlertLevels[];
 bool   g_floatingAlertSent[];
 bool   g_closeLockActive = false;
@@ -396,6 +409,48 @@ bool FirstEntryRsiOK()
    const double rsiNow = rsiBuf[0];
    const double rsiPrev = rsiBuf[1];
    return (rsiNow < InpRsiThreshold && (rsiNow - rsiPrev) >= InpRsiMinRise);
+}
+
+bool FirstEntryMaOK()
+{
+   if(!InpUseFirstEntryMaFilter)
+      return true;
+
+   if(g_maHandle == INVALID_HANDLE)
+      return false;
+
+   double maBuf[];
+   ArrayResize(maBuf, 2);
+   ArraySetAsSeries(maBuf, true);
+   const int copied = CopyBuffer(g_maHandle, 0, 0, 2, maBuf);
+   if(copied < 2)
+      return false;
+
+   if(InpUseFirstEntryFullCandleBelowMa)
+   {
+      // Use previous closed candle: require full candle below MA (high < MA).
+      const double h = iHigh(g_symbol, PERIOD_CURRENT, 1);
+      if(h == 0.0)
+         return false;
+      return (h < maBuf[1]);
+   }
+
+   const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
+   return (bid < maBuf[0]);
+}
+
+bool FirstEntryBullishCandleOK()
+{
+   if(!InpUseFirstEntryBullishCandle)
+      return true;
+
+   // Use previous closed candle on current chart timeframe.
+   const double o = iOpen(g_symbol, PERIOD_CURRENT, 1);
+   const double c = iClose(g_symbol, PERIOD_CURRENT, 1);
+   if(o == 0.0 && c == 0.0)
+      return false;
+
+   return (c > o);
 }
 
 string UrlEncode(const string src)
@@ -907,12 +962,29 @@ int OnInit()
          Print("Init fail | invalid RSI period | need > 1");
          return INIT_FAILED;
       }
-      g_rsiHandle = iRSI(g_symbol, InpRsiTimeframe, InpRsiPeriod, PRICE_CLOSE);
+      g_rsiHandle = iRSI(g_symbol, PERIOD_CURRENT, InpRsiPeriod, PRICE_CLOSE);
       if(g_rsiHandle == INVALID_HANDLE)
       {
       Print("Init fail | cannot create RSI handle");
-      return INIT_FAILED;
+         return INIT_FAILED;
+      }
    }
+
+   if(InpUseFirstEntryMaFilter)
+   {
+      if(InpFirstEntryMaPeriod <= 0)
+      {
+         Print("Init fail | invalid MA period | need > 0");
+         return INIT_FAILED;
+      }
+
+      const ENUM_MA_METHOD maMethod = (InpFirstEntryMaType == MA_SIMPLE ? MODE_SMA : MODE_EMA);
+      g_maHandle = iMA(g_symbol, PERIOD_CURRENT, InpFirstEntryMaPeriod, 0, maMethod, PRICE_CLOSE);
+      if(g_maHandle == INVALID_HANDLE)
+      {
+         Print("Init fail | cannot create MA handle for first entry");
+         return INIT_FAILED;
+      }
    }
 
    if(InpMaxPositions <= 0)
@@ -959,6 +1031,11 @@ int OnInit()
          " | CommonFiles: ", (InpUseCommonFiles ? "true" : "false"),
          " | ManualCycleId: ", InpManualResumeCycleId,
          " | FirstEntryRSI: ", (InpUseFirstEntryRsiFilter ? "true" : "false"),
+         " | FirstEntryMA: ", (InpUseFirstEntryMaFilter ? "true" : "false"),
+         " | MA mode: ", (InpUseFirstEntryFullCandleBelowMa ? "full_candle_below" : "bid_below"),
+         " | MA period/type: ", (string)InpFirstEntryMaPeriod, "/",
+         (InpFirstEntryMaType == MA_SIMPLE ? "SMA" : "EMA"),
+         " | FirstEntryBullishCandle: ", (InpUseFirstEntryBullishCandle ? "true" : "false"),
          " | WarnPause: ", (InpWarnOnMaxPositions ? "true" : "false"),
          " | UseCloseLock: ", (InpUseCloseLock ? "true" : "false"),
          " | PriorityCloseOrder: ", (InpUsePriorityCloseOrder ? "true" : "false"),
@@ -997,6 +1074,12 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(g_rsiHandle);
       g_rsiHandle = INVALID_HANDLE;
+   }
+
+   if(g_maHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_maHandle);
+      g_maHandle = INVALID_HANDLE;
    }
 }
 
@@ -1259,6 +1342,10 @@ void OnTick()
 
       // RSI filter is used only for normal first entry (not manual resume batch).
       if(!g_manualBatchActive && !FirstEntryRsiOK())
+         return;
+      if(!g_manualBatchActive && !FirstEntryMaOK())
+         return;
+      if(!g_manualBatchActive && !FirstEntryBullishCandleOK())
          return;
 
       if(g_manualBatchActive)
