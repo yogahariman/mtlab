@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//| XAUUSD_OCO_Straddle_Breakout.mq5                                 |
-//| OCO breakout EA: Buy Stop above + Sell Stop below                |
+//| XAUUSD_OCO_Straddle_Breakout_TrendFilter.mq5                     |
+//| OCO breakout EA with Trend Filter (reduces false breakouts)      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -29,12 +29,19 @@ input bool   InpUseTrail                  = true;    // Enable pips-based traili
 input double InpTrailStartPips            = 60;   // Activate trail after favorable move reaches this pips
 input double InpTrailDistancePips         = 30;   // Close when favorable move drops from peak by this pips
 
+input group "Trend Filter (NEW!)"
+input bool   InpUseTrendFilter            = true;   // Enable trend filter to reduce false breakouts
+input int    InpTrendFilterMaPeriod       = 20;     // EMA period for trend detection
+input double InpTrendFilterMinDistance    = 0.5;    // Minimum distance between current price and EMA (in pips)
+input int    InpTrendFilterMode           = 2;      // Filter mode: 1=AllowEither, 2=StrictBoth, 3=BuyOnly, 4=SellOnly, 0=Disabled
+
 CTrade trade;
 string g_symbol = "";
 int g_prevPosCount = 0;
 bool g_trailActive = false;
 double g_trailPeakPips = 0.0;
 datetime g_lastExitTime = 0;
+int g_trendFilterMaHandle = INVALID_HANDLE;
 
 string LineName(const string suffix)
 {
@@ -68,6 +75,7 @@ void ClearVisualLines()
    ObjectDelete(0, LineName("BUY_SL"));
    ObjectDelete(0, LineName("SELL_SL"));
    ObjectDelete(0, LineName("TRAIL_STOP"));
+   ObjectDelete(0, LineName("TREND_EMA"));
 }
 
 void UpdateVisualLines()
@@ -78,6 +86,7 @@ void UpdateVisualLines()
    double buySl = 0.0;
    double sellSl = 0.0;
    double trailStopPrice = 0.0;
+   double trendEmaPrice = 0.0;
 
    const int oTotal = OrdersTotal();
    for(int i = 0; i < oTotal; i++)
@@ -136,12 +145,23 @@ void UpdateVisualLines()
       }
    }
 
-   // Green = entry lines, Red = stop-loss lines. Use dotted style for cleaner chart.
+   // Draw trend EMA line
+   if(InpUseTrendFilter && g_trendFilterMaHandle != INVALID_HANDLE)
+   {
+      double emaBuf[];
+      ArrayResize(emaBuf, 1);
+      ArraySetAsSeries(emaBuf, true);
+      if(CopyBuffer(g_trendFilterMaHandle, 0, 0, 1, emaBuf) == 1)
+         trendEmaPrice = emaBuf[0];
+   }
+
+   // Green = entry lines, Red = stop-loss lines. Yellow = EMA trend line
    UpsertHLine(LineName("BUY_ENTRY"), buyEntry, clrLime, STYLE_DOT);
    UpsertHLine(LineName("SELL_ENTRY"), sellEntry, clrLime, STYLE_DOT);
    UpsertHLine(LineName("BUY_SL"), buySl, clrRed, STYLE_DOT);
    UpsertHLine(LineName("SELL_SL"), sellSl, clrRed, STYLE_DOT);
    UpsertHLine(LineName("TRAIL_STOP"), trailStopPrice, clrOrange, STYLE_DOT);
+   UpsertHLine(LineName("TREND_EMA"), trendEmaPrice, clrGoldenrod, STYLE_SOLID);
 }
 
 bool IsTradeAllowed()
@@ -545,10 +565,85 @@ void DeletePendings(const ulong &tickets[])
                " | retcode=", (string)trade.ResultRetcode(),
                " | ", trade.ResultRetcodeDescription());
       }
-      else
-      {
-      }
    }
+}
+
+// NEW: Trend filter check with multiple modes
+// Mode 0: Disabled (always OK)
+// Mode 1: AllowEither (buy OR sell, not AND)
+// Mode 2: StrictBoth (buy AND sell both conditions checked)
+// Mode 3: BuyOnly (only check buy condition)
+// Mode 4: SellOnly (only check sell condition)
+bool IsTrendFilterOK(const string symbol)
+{
+   if(!InpUseTrendFilter || InpTrendFilterMode == 0)
+      return true;
+
+   if(g_trendFilterMaHandle == INVALID_HANDLE)
+   {
+      Print("Trend filter WARN | MA handle invalid");
+      return true; // Fallback: allow entry if indicator fails
+   }
+
+   const double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   const double pip = PipPoint(symbol);
+   if(bid <= 0.0 || ask <= 0.0 || pip <= 0.0)
+      return false;
+
+   double emaBuf[];
+   ArrayResize(emaBuf, 1);
+   ArraySetAsSeries(emaBuf, true);
+   if(CopyBuffer(g_trendFilterMaHandle, 0, 0, 1, emaBuf) != 1)
+   {
+      Print("Trend filter WARN | CopyBuffer fail");
+      return true; // Fallback: allow entry if buffer copy fails
+   }
+
+   const double emaPrice = emaBuf[0];
+   const double minDistPrice = InpTrendFilterMinDistance * pip;
+   
+   bool buyOK = (bid > emaPrice + minDistPrice);
+   bool sellOK = (ask < emaPrice - minDistPrice);
+
+   bool result = false;
+   
+   if(InpTrendFilterMode == 1)
+   {
+      // Mode 1: Allow if EITHER buy OR sell is OK
+      result = (buyOK || sellOK);
+      Print("Trend filter | mode=AllowEither | buyOK=", (buyOK?"yes":"no"),
+            " | sellOK=", (sellOK?"yes":"no"), " | result=", (result?"ALLOW":"REJECT"));
+   }
+   else if(InpTrendFilterMode == 2)
+   {
+      // Mode 2: Strict - both must be OK
+      result = (buyOK && sellOK);
+      Print("Trend filter | mode=StrictBoth | buyOK=", (buyOK?"yes":"no"),
+            " | sellOK=", (sellOK?"yes":"no"), " | result=", (result?"ALLOW":"REJECT"));
+   }
+   else if(InpTrendFilterMode == 3)
+   {
+      // Mode 3: Buy only
+      result = buyOK;
+      Print("Trend filter | mode=BuyOnly | buyOK=", (buyOK?"yes":"no"), " | result=", (result?"ALLOW":"REJECT"));
+   }
+   else if(InpTrendFilterMode == 4)
+   {
+      // Mode 4: Sell only
+      result = sellOK;
+      Print("Trend filter | mode=SellOnly | sellOK=", (sellOK?"yes":"no"), " | result=", (result?"ALLOW":"REJECT"));
+   }
+
+   if(result)
+   {
+      Print("Trend filter OK | bid=", DoubleToString(bid, 2),
+            " | ask=", DoubleToString(ask, 2),
+            " | ema=", DoubleToString(emaPrice, 2),
+            " | minDist=", DoubleToString(minDistPrice, 4));
+   }
+   
+   return result;
 }
 
 bool PlaceOcoPendings()
@@ -558,6 +653,13 @@ bool PlaceOcoPendings()
 
    if(!SpreadOK(g_symbol, (double)InpMaxSpreadPips))
       return false;
+
+   // NEW: Trend filter check
+   if(!IsTrendFilterOK(g_symbol))
+   {
+      Print("OCO placement skipped | trend_filter_reject");
+      return false;
+   }
 
    const int digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
    const double point = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
@@ -644,7 +746,8 @@ bool PlaceOcoPendings()
    Print("OCO placed | BuyPending=", DoubleToString(buyPrice, digits),
          " | SellPending=", DoubleToString(sellPrice, digits),
          " | SLPips=", DoubleToString(InpStopLossPips, 1),
-         " | TPPips=", DoubleToString(EffectiveTakeProfitPips(), 1));
+         " | TPPips=", DoubleToString(EffectiveTakeProfitPips(), 1),
+         " | TrendFilter=", (InpUseTrendFilter ? "ON" : "OFF"));
    return true;
 }
 
@@ -753,14 +856,49 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   // NEW: Create trend filter MA handle
+   if(InpUseTrendFilter)
+   {
+      if(InpTrendFilterMaPeriod <= 0)
+      {
+         Print("Init fail | trend filter MA period must be > 0");
+         return INIT_FAILED;
+      }
+      g_trendFilterMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpTrendFilterMaPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_trendFilterMaHandle == INVALID_HANDLE)
+      {
+         Print("Init fail | cannot create trend filter MA handle");
+         return INIT_FAILED;
+      }
+   }
+
    trade.SetExpertMagicNumber(InpMagic);
    ClearVisualLines();
+   
    Print("EA init OK | symbol=", g_symbol,
          " | distancePips=", DoubleToString(InpDistancePips, 1),
          " | lots=", DoubleToString(InpLots, 2),
          " | SLPips=", DoubleToString(InpStopLossPips, 1),
          " | TPPips=", DoubleToString(EffectiveTakeProfitPips(), 1),
          " | trail=", (InpUseTrail ? "true" : "false"));
+   
+   if(InpUseTrendFilter)
+   {
+      string modeStr = "Unknown";
+      if(InpTrendFilterMode == 0) modeStr = "Disabled";
+      else if(InpTrendFilterMode == 1) modeStr = "AllowEither (buy OR sell)";
+      else if(InpTrendFilterMode == 2) modeStr = "StrictBoth (buy AND sell)";
+      else if(InpTrendFilterMode == 3) modeStr = "BuyOnly";
+      else if(InpTrendFilterMode == 4) modeStr = "SellOnly";
+      
+      Print("Trend filter | enabled=true | mode=", modeStr,
+            " | MaPeriod=", (string)InpTrendFilterMaPeriod,
+            " | MinDistance=", DoubleToString(InpTrendFilterMinDistance, 1), " pips");
+   }
+   else
+   {
+      Print("Trend filter | enabled=false");
+   }
 
    return INIT_SUCCEEDED;
 }
@@ -768,6 +906,12 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    ClearVisualLines();
+   
+   if(g_trendFilterMaHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_trendFilterMaHandle);
+      g_trendFilterMaHandle = INVALID_HANDLE;
+   }
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,

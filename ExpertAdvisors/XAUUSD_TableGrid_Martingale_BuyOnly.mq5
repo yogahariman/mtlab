@@ -20,16 +20,9 @@ enum EFirstEntryMaType
 
 input group "General"
 input long   InpMagic                   = 260414; // Magic number
-input bool   InpShowCycleRefOnChart     = true;   // Show manual cycle reference on chart
-
-input group "Manual Resume (Top Priority)"
-input int    InpManualResumeCycleId     = 0;      // Trigger step (0->1->2->3): new batch only when value increases
-input double InpManualResumeLot         = 0.11;   // Manual resume lot per order
-input double InpManualResumeGridPips    = 200.0;  // Manual resume grid in pips
-input int    InpManualResumeCount       = 5;      // Additional positions to open in current manual batch
 
 input group "CSV Level Table"
-input string InpTableFile               = "files/xau_levels.csv"; // CSV in MQL5/Files, format: lot,gridPips per line
+input string InpTableFile               = "xau_levels.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPips
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
@@ -63,6 +56,7 @@ input double InpBasketTPDefaultMoney    = 15;   // Fallback basket TP when no gr
 input double InpBasketTPGrid1Money      = 1.5;  // Basket TP when grid count is 1
 input double InpBasketTPGrid2Money      = 3.5;  // Basket TP when grid count is 2
 input double InpBasketTPGrid3Money      = 7.0;  // Basket TP when grid count is 3
+input double InpFloatingStopLossMoney   = 3000.0;  // Close all + stop trading when floating profit <= -value (0=off)
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
 input int    InpTrailGridTo             = 1000;     // Trailing ends at this grid count (0=no upper limit)
@@ -71,7 +65,6 @@ input double InpTrailDistanceMoney      = 5.0;    // Close all when profit drops
 
 input group "Telegram Alerts"
 input bool   InpWarnOnMaxPositions      = false;   // Send Telegram warning when max positions is reached
-input bool   InpWarnOnFloatingLevels    = true;   // Send Telegram warning when floating loss hits configured levels
 input string InpFloatingLossLevels      = "1000,2000"; // Floating loss alert levels (comma-separated)
 
 struct SLevel
@@ -93,13 +86,6 @@ int    g_maxPositions = 0;
 bool   g_trailActive = false;
 double g_trailPeakProfit = 0.0;
 bool   g_maxPosWarnSent = false;
-int    g_lastAppliedManualCycleId = 0;
-bool   g_manualBatchActive = false;
-bool   g_manualPausedByBatch = false;
-int    g_manualBatchStartPos = 0;
-int    g_manualBatchTargetCount = 0;
-double g_manualBatchLot = 0.0;
-double g_manualBatchGridPips = 0.0;
 int    g_rsiHandle = INVALID_HANDLE;
 int    g_maHandle = INVALID_HANDLE;
 double g_floatingAlertLevels[];
@@ -107,6 +93,8 @@ bool   g_floatingAlertSent[];
 bool   g_closeLockActive = false;
 int    g_closeLockLastRemain = -1;
 bool   g_closeLockWaitTradePrinted = false;
+bool   g_stopTradingByFloatingSL = false;
+bool   g_prevTerminalTradeAllowed = true;
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
 const string TG_BOT_TOKEN = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";
@@ -175,10 +163,10 @@ int CountBuyPositions(const string symbol, const long magic)
    return count;
 }
 
-bool GetLatestBuyPosition(const string symbol, const long magic, datetime &latest_time, double &latest_price)
+bool GetLatestBuyPosition(const string symbol, const long magic, double &latest_price)
 {
    bool found = false;
-   latest_time = 0;
+   datetime latest_time = 0;
    latest_price = 0.0;
 
    const int total = PositionsTotal();
@@ -639,8 +627,6 @@ void ResetFloatingAlertState()
 
 void CheckFloatingLossAlerts(const double floatingProfit, const int posCount)
 {
-   if(!InpWarnOnFloatingLevels)
-      return;
    if(posCount <= 0)
       return;
 
@@ -707,77 +693,6 @@ bool ProcessCloseLock(const int posCount)
    }
 
    return true;
-}
-
-void DeactivateManualBatch()
-{
-   g_manualBatchActive = false;
-   g_manualBatchStartPos = 0;
-   g_manualBatchTargetCount = 0;
-   g_manualBatchLot = 0.0;
-   g_manualBatchGridPips = 0.0;
-}
-
-void TryActivateManualBatch(const int posCount)
-{
-   if(InpManualResumeCycleId <= g_lastAppliedManualCycleId)
-      return;
-
-   g_lastAppliedManualCycleId = InpManualResumeCycleId;
-
-   if(InpManualResumeLot <= 0.0 || InpManualResumeGridPips <= 0.0 || InpManualResumeCount <= 0)
-   {
-      Print("Manual resume ignored: invalid params (need lot>0, grid>0, count>0).");
-      DeactivateManualBatch();
-      return;
-   }
-
-   g_manualBatchActive = true;
-   g_manualPausedByBatch = false;
-   g_manualBatchStartPos = posCount;
-   g_manualBatchTargetCount = InpManualResumeCount;
-   g_manualBatchLot = InpManualResumeLot;
-   g_manualBatchGridPips = InpManualResumeGridPips;
-   g_maxPosWarnSent = false;
-
-   Print("Manual resume batch ON. Cycle=", InpManualResumeCycleId,
-         " | StartPos=", g_manualBatchStartPos,
-         " | TargetAdd=", g_manualBatchTargetCount,
-         " | Lot=", DoubleToString(g_manualBatchLot, 2),
-         " | GridPips=", DoubleToString(g_manualBatchGridPips, 1));
-}
-
-void UpdateCycleReferenceComment(const int posCount)
-{
-   if(!InpShowCycleRefOnChart)
-      return;
-
-   string state = "IDLE";
-   if(g_manualBatchActive)
-      state = "ACTIVE";
-   else if(g_manualPausedByBatch)
-      state = "PAUSED";
-
-   int added = 0;
-   if(g_manualBatchActive)
-      added = posCount - g_manualBatchStartPos;
-
-   string hint = "";
-   if(g_manualPausedByBatch && InpManualResumeCycleId <= g_lastAppliedManualCycleId)
-      hint = "Hint: Increase InpManualResumeCycleId";
-   else if(g_maxPositions > 0 && posCount >= g_maxPositions && !g_manualBatchActive)
-      hint = "Hint: Set resume params then increase CycleId";
-
-   string txt =
-      "Manual Cycle Ref\n" +
-      "Input CycleId: " + (string)InpManualResumeCycleId + "\n" +
-      "Applied CycleId: " + (string)g_lastAppliedManualCycleId + "\n" +
-      "State: " + state + "\n" +
-      "Added/Target: " + (string)added + "/" + (string)g_manualBatchTargetCount + "\n" +
-      "Positions: " + (string)posCount + "/" + (string)g_maxPositions +
-      (StringLen(hint) > 0 ? "\n" + hint : "");
-
-   Comment(txt);
 }
 
 void PrintCsvLocationGuide(const string filename)
@@ -1013,11 +928,9 @@ int OnInit()
    ResetTrailState();
    ResetFloatingAlertState();
    DeactivateCloseLock();
-   DeactivateManualBatch();
-   g_manualPausedByBatch = false;
-   // Prevent auto-resume on EA restart/reattach when CycleId was already set.
-   g_lastAppliedManualCycleId = InpManualResumeCycleId;
    g_maxPosWarnSent = false;
+   g_stopTradingByFloatingSL = false;
+   g_prevTerminalTradeAllowed = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);
 
    if(InpCloseLockTimerMs > 0)
    {
@@ -1029,7 +942,6 @@ int OnInit()
          " | Levels: ", g_levelCount,
          " | CSV: ", InpTableFile,
          " | CommonFiles: ", (InpUseCommonFiles ? "true" : "false"),
-         " | ManualCycleId: ", InpManualResumeCycleId,
          " | FirstEntryRSI: ", (InpUseFirstEntryRsiFilter ? "true" : "false"),
          " | FirstEntryMA: ", (InpUseFirstEntryMaFilter ? "true" : "false"),
          " | MA mode: ", (InpUseFirstEntryFullCandleBelowMa ? "full_candle_below" : "bid_below"),
@@ -1047,11 +959,11 @@ int OnInit()
          " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
          " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
          " | Basket TP default: ", DoubleToString(InpBasketTPDefaultMoney, 2),
+         " | Floating SL stop: ", DoubleToString(InpFloatingStopLossMoney, 2),
          " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
          " | Trail grid range: ", (string)InpTrailGridFrom, "-", (InpTrailGridTo == 0 ? "INF" : (string)InpTrailGridTo),
          " | Trail start: ", DoubleToString(InpTrailStartMoney, 2),
          " | Trail distance: ", DoubleToString(InpTrailDistanceMoney, 2),
-         " | FloatingAlerts: ", (InpWarnOnFloatingLevels ? "true" : "false"),
          " | Max positions: ", g_maxPositions);
 
    if(InpWarnOnMaxPositions)
@@ -1093,6 +1005,27 @@ void OnTimer()
       return;
 
    const int posCount = CountBuyPositions(g_symbol, InpMagic);
+   const bool terminalTradeAllowed = (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);
+
+   if(!g_prevTerminalTradeAllowed && terminalTradeAllowed)
+   {
+      if(g_stopTradingByFloatingSL)
+      {
+         if(posCount <= 0)
+         {
+            g_stopTradingByFloatingSL = false;
+            ResetTrailState();
+            ResetFloatingAlertState();
+            g_maxPosWarnSent = false;
+            Print("Floating SL stop reset | reason=terminal_algo_toggled_on");
+         }
+         else
+         {
+            Print("Floating SL stop keep active | reason=positions_not_flat | pos=", posCount);
+         }
+      }
+   }
+   g_prevTerminalTradeAllowed = terminalTradeAllowed;
    ProcessCloseLock(posCount);
 }
 
@@ -1116,45 +1049,82 @@ void OnTick()
       ResetTrailState();
       ResetFloatingAlertState();
       DeactivateCloseLock();
-      DeactivateManualBatch();
-      g_manualPausedByBatch = false;
       g_maxPosWarnSent = false;
    }
 
    if(ProcessCloseLock(posCount))
       return;
 
-   TryActivateManualBatch(posCount);
-   UpdateCycleReferenceComment(posCount);
-
-   if(g_manualBatchActive)
+   if(g_stopTradingByFloatingSL)
    {
-      if(posCount < g_manualBatchStartPos)
-         g_manualBatchStartPos = posCount;
-
-      const int added = posCount - g_manualBatchStartPos;
-      if(added >= g_manualBatchTargetCount)
+      if(posCount > 0)
       {
-         g_manualBatchActive = false;
-         g_manualPausedByBatch = true;
-         if(!g_maxPosWarnSent)
+         if(InpUseCloseLock)
          {
-            SendPauseWarning(posCount, "Manual resume batch completed");
-            g_maxPosWarnSent = true;
+            ActivateCloseLock("floating_sl_stop");
+            ProcessCloseLock(posCount);
          }
-         return;
+         else
+         {
+            if(!IsTradeAllowed())
+            {
+               Print("Floating SL stop wait | trade not allowed");
+               return;
+            }
+
+            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
+            if(remain == 0)
+               ResetTrailState();
+            else
+               Print("Floating SL stop close partial | remain=", remain);
+         }
       }
-      g_maxPosWarnSent = false;
-   }
-   else if(g_manualPausedByBatch)
       return;
-   else if(g_maxPositions > 0 && posCount < g_maxPositions)
+   }
+
+   if(g_maxPositions > 0 && posCount < g_maxPositions)
       g_maxPosWarnSent = false;
 
    if(posCount > 0)
    {
       const double profit = TotalProfit(g_symbol, InpMagic);
       CheckFloatingLossAlerts(profit, posCount);
+      if(InpFloatingStopLossMoney > 0.0 && profit <= -InpFloatingStopLossMoney)
+      {
+         g_stopTradingByFloatingSL = true;
+
+         const string msg =
+            "Floating SL Stop Triggered\n" +
+            "Acct: " + AccountInfoString(ACCOUNT_NAME) + "\n" +
+            "Sym: " + g_symbol + "\n" +
+            "Floating: " + DoubleToString(profit, 2) + "\n" +
+            "Limit: -" + DoubleToString(InpFloatingStopLossMoney, 2) + "\n" +
+            "Action: close all + stop trading";
+
+         Print(msg);
+         SendTelegramMessage(msg);
+
+         if(InpUseCloseLock)
+         {
+            ActivateCloseLock("floating_sl_stop");
+            ProcessCloseLock(posCount);
+         }
+         else
+         {
+            if(!IsTradeAllowed())
+            {
+               Print("Floating SL stop wait | trade not allowed");
+               return;
+            }
+
+            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
+            if(remain == 0)
+               ResetTrailState();
+            else
+               Print("Floating SL stop close partial | remain=", remain);
+         }
+         return;
+      }
       double forcedTpMoney = 0.0;
       bool forceTrailOff = false;
       const bool trailRangeValid = (InpTrailGridFrom > 0 && (InpTrailGridTo == 0 || InpTrailGridTo >= InpTrailGridFrom));
@@ -1300,7 +1270,7 @@ void OnTick()
       }
    }
 
-   if(!g_manualBatchActive && g_maxPositions > 0 && posCount >= g_maxPositions)
+   if(g_maxPositions > 0 && posCount >= g_maxPositions)
    {
       if(!g_maxPosWarnSent)
       {
@@ -1324,57 +1294,40 @@ void OnTick()
    double lot;
    double gridPips;
    int levelIndex = -1;
-   if(g_manualBatchActive)
-   {
-      lot = g_manualBatchLot;
-      gridPips = g_manualBatchGridPips;
-   }
-   else
-   {
-      if(!GetNextLevelByPosition(posCount, levelIndex, lot, gridPips))
-         return;
-   }
+   if(!GetNextLevelByPosition(posCount, levelIndex, lot, gridPips))
+      return;
 
    if(posCount == 0)
    {
       if(!SpreadOK(g_symbol, InpMaxSpreadFirstEntryPips))
          return;
 
-      // RSI filter is used only for normal first entry (not manual resume batch).
-      if(!g_manualBatchActive && !FirstEntryRsiOK())
+      if(!FirstEntryRsiOK())
          return;
-      if(!g_manualBatchActive && !FirstEntryMaOK())
+      if(!FirstEntryMaOK())
          return;
-      if(!g_manualBatchActive && !FirstEntryBullishCandleOK())
+      if(!FirstEntryBullishCandleOK())
          return;
 
-      if(g_manualBatchActive)
-         Print("Open first entry | mode=MANUAL_RESUME | lot=", DoubleToString(lot, 2));
-      else
-         Print("Open first entry | level=", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
+      Print("Open first entry | level=", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
       OpenBuy(g_symbol, lot, "TableGridBuy");
       return;
    }
 
-   datetime latest_time;
    double latest_price;
-   if(!GetLatestBuyPosition(g_symbol, InpMagic, latest_time, latest_price))
+   if(!GetLatestBuyPosition(g_symbol, InpMagic, latest_price))
       return;
 
    const double gridPrice = gridPips * PipPoint(g_symbol);
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
-   if(bid <= (latest_price - gridPrice))
+   if(bid < (latest_price - gridPrice))
    {
       if(!SpreadOK(g_symbol, InpMaxSpreadGridEntryPips))
          return;
 
-      if(g_manualBatchActive)
-         Print("Open grid entry | mode=MANUAL_RESUME | lot=", DoubleToString(lot, 2),
-               " | gridPips=", DoubleToString(gridPips, 1));
-      else
-         Print("Open grid entry | level=", (levelIndex + 1),
-               " | lot=", DoubleToString(lot, 2),
-               " | gridPips=", DoubleToString(gridPips, 1));
+      Print("Open grid entry | level=", (levelIndex + 1),
+            " | lot=", DoubleToString(lot, 2),
+            " | gridPips=", DoubleToString(gridPips, 1));
       OpenBuy(g_symbol, lot, "TableGridBuy");
    }
 }
