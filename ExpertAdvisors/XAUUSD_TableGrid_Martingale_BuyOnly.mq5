@@ -34,7 +34,7 @@ input int    InpCooldownAfterCloseSeconds = 0;   // Cooldown after EA closes all
 input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
 input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
 input bool   InpUseAsyncClose           = true;   // Send close requests asynchronously for faster batch close
-input int    InpCloseDeviationPoints    = 300;    // Max deviation in points for close requests (<=0 uses platform default)
+input double InpCloseDeviationPips      = 30.0;   // Max deviation in pips for close requests (<=0 uses platform default)
 input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in one run (keep 1 for async burst)
 input int    InpCloseLockTimerMs        = 100;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
@@ -56,7 +56,7 @@ input double InpBasketTPDefaultMoney    = 15;   // Fallback basket TP when no gr
 input double InpBasketTPGrid1Money      = 1.5;  // Basket TP when grid count is 1
 input double InpBasketTPGrid2Money      = 3.5;  // Basket TP when grid count is 2
 input double InpBasketTPGrid3Money      = 7.0;  // Basket TP when grid count is 3
-input double InpFloatingStopLossMoney   = 3000.0;  // Close all + stop trading when floating profit <= -value (0=off)
+input double InpFloatingStopLossMoney   = 0.0;  // Close all + stop trading when floating profit <= -value (0=off)
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
 input int    InpTrailGridTo             = 1000;     // Trailing ends at this grid count (0=no upper limit)
@@ -127,6 +127,24 @@ double PipPoint(const string symbol)
    if(digits == 3 || digits == 5)
       return point * 10.0;
    return point;
+}
+
+ulong CloseDeviationPointsFromPips(const string symbol, const double deviationPips)
+{
+   if(deviationPips <= 0.0)
+      return 0;
+
+   const double pipPoint = PipPoint(symbol);
+   const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   if(pipPoint <= 0.0 || point <= 0.0)
+      return 0;
+
+   const double deviationPrice = deviationPips * pipPoint;
+   const long points = (long)MathRound(deviationPrice / point);
+   if(points <= 0)
+      return 1;
+
+   return (ulong)points;
 }
 
 double NormalizeVolume(double lot, const string symbol)
@@ -209,8 +227,8 @@ double TotalProfit(const string symbol, const long magic)
 
 int CloseAllBuyPositions(const string symbol, const long magic)
 {
-   const bool useCustomDeviation = (InpCloseDeviationPoints > 0);
-   const ulong closeDeviation = (useCustomDeviation ? (ulong)InpCloseDeviationPoints : 0);
+   const ulong closeDeviation = CloseDeviationPointsFromPips(symbol, InpCloseDeviationPips);
+   const bool useCustomDeviation = (closeDeviation > 0);
    const bool useAsyncClose = InpUseAsyncClose;
 
    if(useAsyncClose)
@@ -952,7 +970,8 @@ int OnInit()
          " | UseCloseLock: ", (InpUseCloseLock ? "true" : "false"),
          " | PriorityCloseOrder: ", (InpUsePriorityCloseOrder ? "true" : "false"),
          " | UseAsyncClose: ", (InpUseAsyncClose ? "true" : "false"),
-         " | CloseDeviationPoints: ", (string)InpCloseDeviationPoints,
+         " | CloseDeviationPips: ", DoubleToString(InpCloseDeviationPips, 1),
+         " | CloseDeviationPoints(actual): ", (string)CloseDeviationPointsFromPips(g_symbol, InpCloseDeviationPips),
          " | CloseAttemptsPerRun: ", (string)InpCloseAttemptsPerRun,
          " | CloseLockTimerMs: ", (string)InpCloseLockTimerMs,
          " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
