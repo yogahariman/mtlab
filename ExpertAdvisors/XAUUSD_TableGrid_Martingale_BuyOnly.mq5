@@ -41,6 +41,11 @@ input int    InpCloseLockTimerMs        = 100;    // Close-lock timer interval (
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 
+input group "Trading Session"
+input bool   InpUseTimeFilter           = true;   // Enable broker-time trading session filter
+input int    InpStartHourBroker         = 5;      // Start taking new first entries from this broker hour (00-23)
+input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this broker hour (00-23)
+
 input group "First Entry Filters"
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
@@ -58,7 +63,7 @@ input string InpBasketTPByGridMoney     = "1,2.4,4.8,4.8,12"; // Fixed basket TP
 input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
-input double InpTrailStartMoney         = 15.0;   // Activate trailing when basket profit >= value
+input double InpTrailStartMoney         = 18.0;   // Activate trailing when basket profit >= value
 input double InpTrailDistancePercent    = 33.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 
 input group "Telegram Alerts"
@@ -90,6 +95,7 @@ bool   g_closeLockActive = false;
 int    g_closeLockLastRemain = -1;
 bool   g_closeLockWaitTradePrinted = false;
 bool   g_stopTradingByFloatingSL = false;
+bool   g_sessionPauseUntilStart = false;
 
 string GuideLineName(const string suffix)
 {
@@ -214,6 +220,66 @@ bool IsTradeAllowed()
    if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
       return false;
    return true;
+}
+
+int BrokerHour(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   return dt.hour;
+}
+
+bool IsWithinFirstEntryWindow(const datetime whenTime)
+{
+   const int h = BrokerHour(whenTime);
+   return (h >= InpStartHourBroker && h < InpPauseHourBroker);
+}
+
+void UpdateSessionPauseState(const int posCount)
+{
+   if(!InpUseTimeFilter)
+   {
+      g_sessionPauseUntilStart = false;
+      return;
+   }
+
+   const datetime now = TimeCurrent();
+   const int hourNow = BrokerHour(now);
+   const bool inStartWindow = IsWithinFirstEntryWindow(now);
+
+   if(g_sessionPauseUntilStart && inStartWindow)
+   {
+      g_sessionPauseUntilStart = false;
+      Print("Session pause OFF | resumed at broker hour=", hourNow);
+   }
+
+   // From pause hour onward, if basket is flat, pause until next start window.
+   if(hourNow >= InpPauseHourBroker && posCount <= 0 && !g_sessionPauseUntilStart)
+   {
+      g_sessionPauseUntilStart = true;
+      Print("Session pause ON | reason=flat_between_pause_window | hour=", hourNow);
+   }
+}
+
+bool IsFirstEntryAllowedNow()
+{
+   if(!InpUseTimeFilter)
+      return true;
+   if(g_sessionPauseUntilStart)
+      return false;
+
+   return IsWithinFirstEntryWindow(TimeCurrent());
+}
+
+bool IsGridEntryAllowedNow(const int posCount)
+{
+   if(!InpUseTimeFilter)
+      return true;
+   if(g_sessionPauseUntilStart)
+      return false;
+
+   // Existing basket can keep being managed even outside first-entry session.
+   return (posCount > 0);
 }
 
 double PipPoint(const string symbol)
@@ -1027,6 +1093,22 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   if(InpUseTimeFilter)
+   {
+      if(InpStartHourBroker < 0 || InpStartHourBroker > 23 ||
+         InpPauseHourBroker < 0 || InpPauseHourBroker > 23)
+      {
+         Print("Init fail | invalid broker session hour | start/pause must be 0..23");
+         return INIT_FAILED;
+      }
+
+      if(InpStartHourBroker >= InpPauseHourBroker)
+      {
+         Print("Init fail | session config invalid | need start_hour < pause_hour");
+         return INIT_FAILED;
+      }
+   }
+
    PrintCsvLocationGuide(InpTableFile);
 
    if(!LoadLevelTableFromCsv(InpTableFile))
@@ -1092,6 +1174,7 @@ int OnInit()
    ClearProfitGuideLines();
    g_maxPosWarnSent = false;
    g_stopTradingByFloatingSL = false;
+   g_sessionPauseUntilStart = false;
 
    if(InpUseCloseLock && InpCloseLockTimerMs > 0)
    {
@@ -1118,6 +1201,9 @@ int OnInit()
          " | CloseLockTimerMs: ", (string)InpCloseLockTimerMs,
          " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
          " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
+         " | UseTimeFilter: ", (InpUseTimeFilter ? "true" : "false"),
+         " | StartHour: ", (string)InpStartHourBroker,
+         " | PauseHour: ", (string)InpPauseHourBroker,
          " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
          " | Basket TP default: ", DoubleToString(InpBasketTPDefaultMoney, 2),
          " | Basket TP by grid: ", InpBasketTPByGridMoney,
@@ -1192,6 +1278,8 @@ void OnTick()
 
    if(ProcessCloseLock(posCount))
       return;
+
+   UpdateSessionPauseState(posCount);
 
    if(g_stopTradingByFloatingSL)
    {
@@ -1445,6 +1533,9 @@ void OnTick()
 
    if(posCount == 0)
    {
+      if(!IsFirstEntryAllowedNow())
+         return;
+
       if(!SpreadOK(g_symbol, InpMaxSpreadFirstEntryPips))
          return;
 
@@ -1468,6 +1559,9 @@ void OnTick()
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    if(bid < (latest_price - gridPrice))
    {
+      if(!IsGridEntryAllowedNow(posCount))
+         return;
+
       if(!SpreadOK(g_symbol, InpMaxSpreadGridEntryPips))
          return;
 
