@@ -70,7 +70,7 @@ input double InpBasketTPDefaultMoney    = 10;   // Fallback basket TP when no gr
 input string InpBasketTPByGridMoney     = "1,2.4,4.8,4.8,12"; // Legacy fallback TP-by-grid (used only when CSV tpMoney is empty/legacy 2-column CSV).
 input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
+input int    InpTrailGridFrom           = 10;     // Trailing starts from this grid count
 input double InpTrailStartMoney         = 18.0;   // Legacy fallback trail start when CSV tpMoney is empty/legacy 2-column CSV
 input double InpTrailDistancePercent    = 33.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 
