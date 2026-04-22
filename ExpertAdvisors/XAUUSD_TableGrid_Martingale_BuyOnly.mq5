@@ -18,12 +18,19 @@ enum EFirstEntryMaType
    MA_EXPONENTIAL = 1
 };
 
+enum ESessionTimeMode
+{
+   SESSION_TIME_BROKER = 0,
+   SESSION_TIME_UTC = 1,
+   SESSION_TIME_WIB = 2
+};
+
 input group "General"
 input long   InpMagic                   = 260414; // Magic number
 input bool   InpShowProfitGuideLines    = true;   // Show TP/trailing guide lines on chart
 
 input group "CSV Level Table"
-input string InpTableFile               = "xau_levels.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPips
+input string InpTableFile               = "xau_levels.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPips,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
@@ -42,9 +49,10 @@ input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 
 input group "Trading Session"
-input bool   InpUseTimeFilter           = true;   // Enable broker-time trading session filter
-input int    InpStartHourBroker         = 5;      // Start taking new first entries from this broker hour (00-23)
-input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this broker hour (00-23)
+input bool   InpUseTimeFilter           = false;   // Enable trading session filter
+input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
+input int    InpStartHourBroker         = 9;      // Start first entries from this hour in selected session timezone (00-23)
+input int    InpPauseHourBroker         = 1;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
@@ -59,11 +67,11 @@ input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev 
 
 input group "Exit & Trailing"
 input double InpBasketTPDefaultMoney    = 10;   // Fallback basket TP when no grid-specific TP applies
-input string InpBasketTPByGridMoney     = "1,2.4,4.8,4.8,12"; // Fixed basket TP by grid (e.g. "1,4,10" or "1:1,2:4,3:10"). Applied for grids below TrailGridFrom.
+input string InpBasketTPByGridMoney     = "1,2.4,4.8,4.8,12"; // Legacy fallback TP-by-grid (used only when CSV tpMoney is empty/legacy 2-column CSV).
 input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 6;     // Trailing starts from this grid count
-input double InpTrailStartMoney         = 18.0;   // Activate trailing when basket profit >= value
+input double InpTrailStartMoney         = 18.0;   // Legacy fallback trail start when CSV tpMoney is empty/legacy 2-column CSV
 input double InpTrailDistancePercent    = 33.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 
 input group "Telegram Alerts"
@@ -73,6 +81,7 @@ struct SLevel
 {
    double lot;
    double gridPips;
+   double tpMoney;
 };
 
 CTrade trade;
@@ -229,9 +238,49 @@ int BrokerHour(const datetime whenTime)
    return dt.hour;
 }
 
+int NormalizeHour(const int hour)
+{
+   int h = hour % 24;
+   if(h < 0)
+      h += 24;
+   return h;
+}
+
+int BrokerUtcOffsetHoursNow()
+{
+   const datetime brokerNow = TimeCurrent();
+   const datetime utcNow = TimeGMT();
+   const int offsetSeconds = (int)(brokerNow - utcNow);
+   return (int)MathRound((double)offsetSeconds / 3600.0);
+}
+
+string SessionTimeModeLabel()
+{
+   if(InpSessionTimeMode == SESSION_TIME_UTC)
+      return "UTC";
+   if(InpSessionTimeMode == SESSION_TIME_WIB)
+      return "WIB(UTC+7)";
+   return "BROKER";
+}
+
+int SessionReferenceHour(const datetime whenTime)
+{
+   const int brokerHour = BrokerHour(whenTime);
+   if(InpSessionTimeMode == SESSION_TIME_BROKER)
+      return brokerHour;
+
+   const int brokerUtcOffset = BrokerUtcOffsetHoursNow();
+   const int utcHour = NormalizeHour(brokerHour - brokerUtcOffset);
+   if(InpSessionTimeMode == SESSION_TIME_UTC)
+      return utcHour;
+
+   // WIB is UTC+7.
+   return NormalizeHour(utcHour + 7);
+}
+
 bool IsWithinFirstEntryWindow(const datetime whenTime)
 {
-   const int h = BrokerHour(whenTime);
+   const int h = SessionReferenceHour(whenTime);
    return (h >= InpStartHourBroker && h < InpPauseHourBroker);
 }
 
@@ -244,20 +293,21 @@ void UpdateSessionPauseState(const int posCount)
    }
 
    const datetime now = TimeCurrent();
-   const int hourNow = BrokerHour(now);
+   const int hourNow = SessionReferenceHour(now);
    const bool inStartWindow = IsWithinFirstEntryWindow(now);
 
    if(g_sessionPauseUntilStart && inStartWindow)
    {
       g_sessionPauseUntilStart = false;
-      Print("Session pause OFF | resumed at broker hour=", hourNow);
+      Print("Session pause OFF | resumed at ", SessionTimeModeLabel(), " hour=", hourNow);
    }
 
    // From pause hour onward, if basket is flat, pause until next start window.
    if(hourNow >= InpPauseHourBroker && posCount <= 0 && !g_sessionPauseUntilStart)
    {
       g_sessionPauseUntilStart = true;
-      Print("Session pause ON | reason=flat_between_pause_window | hour=", hourNow);
+      Print("Session pause ON | reason=flat_between_pause_window | ",
+            SessionTimeModeLabel(), " hour=", hourNow);
    }
 }
 
@@ -863,7 +913,7 @@ bool LoadBasketTpByGridMoneyFromInput(const string rawInput)
    return true;
 }
 
-void GetForcedTpByGrid(const int posCount, double &forcedTpMoney, bool &forceTrailOff)
+void GetForcedTpByGrid(const int posCount, const double tableTpMoney, double &forcedTpMoney, bool &forceTrailOff)
 {
    forcedTpMoney = 0.0;
    forceTrailOff = false;
@@ -872,6 +922,13 @@ void GetForcedTpByGrid(const int posCount, double &forcedTpMoney, bool &forceTra
       return;
 
    forceTrailOff = true;
+
+   // Priority: TP from current CSV level (3rd column).
+   if(tableTpMoney > 0.0)
+   {
+      forcedTpMoney = tableTpMoney;
+      return;
+   }
 
    const int n = ArraySize(g_basketTpByGridMoney);
    if(n <= 0)
@@ -946,7 +1003,7 @@ void PrintCsvLocationGuide(const string filename)
    }
 }
 
-bool ParseCsvLevelRow(const string row, double &lot, double &gridPips)
+bool ParseCsvLevelRow(const string row, double &lot, double &gridPips, double &tpMoney)
 {
    string text = row;
    StringTrimLeft(text);
@@ -956,24 +1013,39 @@ bool ParseCsvLevelRow(const string row, double &lot, double &gridPips)
 
    string cells[];
    int cellCount = StringSplit(text, ',', cells);
-   if(cellCount != 2)
+   if(cellCount != 3)
    {
       // Fallback support for semicolon-separated files.
       cellCount = StringSplit(text, ';', cells);
-      if(cellCount != 2)
-         return false;
+      if(cellCount != 3)
+      {
+         // Backward compatibility: old 2-column format (lot,gridPips).
+         cellCount = StringSplit(text, ',', cells);
+         if(cellCount != 2)
+            cellCount = StringSplit(text, ';', cells);
+         if(cellCount != 2)
+            return false;
+      }
    }
 
    string slot = cells[0];
    string sgrid = cells[1];
+   string stp = "";
+   if(cellCount >= 3)
+      stp = cells[2];
    StringTrimLeft(slot);
    StringTrimRight(slot);
    StringTrimLeft(sgrid);
    StringTrimRight(sgrid);
+   StringTrimLeft(stp);
+   StringTrimRight(stp);
 
    lot = StringToDouble(slot);
    gridPips = StringToDouble(sgrid);
+   tpMoney = (StringLen(stp) > 0 ? StringToDouble(stp) : 0.0);
    if(lot <= 0.0 || gridPips <= 0.0)
+      return false;
+   if(cellCount >= 3 && tpMoney <= 0.0)
       return false;
 
    return true;
@@ -1024,10 +1096,11 @@ bool LoadLevelTableFromCsv(const string filename)
 
       double lot = 0.0;
       double gridPips = 0.0;
-      if(!ParseCsvLevelRow(line, lot, gridPips))
+      double tpMoney = 0.0;
+      if(!ParseCsvLevelRow(line, lot, gridPips, tpMoney))
       {
          Print("CSV row invalid | line=", lineNo,
-               " | row='", line, "' | expected=lot,gridPips (>0)");
+               " | row='", line, "' | expected=lot,gridPips,tpMoney (>0) or legacy lot,gridPips");
          FileClose(handle);
          return false;
       }
@@ -1036,6 +1109,7 @@ bool LoadLevelTableFromCsv(const string filename)
       ArrayResize(g_levels, newSize);
       g_levels[g_levelCount].lot = lot;
       g_levels[g_levelCount].gridPips = gridPips;
+      g_levels[g_levelCount].tpMoney = tpMoney;
       g_levelCount = newSize;
    }
 
@@ -1051,12 +1125,12 @@ bool LoadLevelTableFromCsv(const string filename)
    return true;
 }
 
-bool GetNextLevelByPosition(const int current_positions, int &levelIndex, double &lot, double &gridPips)
+bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &lot, double &gridPips, double &tpMoney)
 {
    if(g_levelCount <= 0)
       return false;
 
-   int idx = current_positions;
+   int idx = positionCount;
    if(idx >= g_levelCount)
    {
       if(!InpUseLastLevelIfExceeded)
@@ -1067,7 +1141,17 @@ bool GetNextLevelByPosition(const int current_positions, int &levelIndex, double
    levelIndex = idx;
    lot = g_levels[idx].lot;
    gridPips = g_levels[idx].gridPips;
+   tpMoney = g_levels[idx].tpMoney;
    return true;
+}
+
+bool GetCurrentGridLevel(const int posCount, int &levelIndex, double &lot, double &gridPips, double &tpMoney)
+{
+   if(posCount <= 0)
+      return false;
+
+   // posCount=1 means level index 0.
+   return GetLevelByPositionCount(posCount - 1, levelIndex, lot, gridPips, tpMoney);
 }
 
 int OnInit()
@@ -1098,7 +1182,7 @@ int OnInit()
       if(InpStartHourBroker < 0 || InpStartHourBroker > 23 ||
          InpPauseHourBroker < 0 || InpPauseHourBroker > 23)
       {
-         Print("Init fail | invalid broker session hour | start/pause must be 0..23");
+         Print("Init fail | invalid session hour | start/pause must be 0..23");
          return INIT_FAILED;
       }
 
@@ -1183,36 +1267,39 @@ int OnInit()
    }
 
    Print("EA init OK | Symbol=", g_symbol,
-         " | Levels: ", g_levelCount,
-         " | CSV: ", InpTableFile,
-         " | CommonFiles: ", (InpUseCommonFiles ? "true" : "false"),
-         " | FirstEntryRSI: ", (InpUseFirstEntryRsiFilter ? "true" : "false"),
-         " | FirstEntryMA: ", (InpUseFirstEntryMaFilter ? "true" : "false"),
-         " | MA mode: ", (InpUseFirstEntryFullCandleBelowMa ? "full_candle_below" : "bid_below"),
-         " | MA period/type: ", (string)InpFirstEntryMaPeriod, "/",
-         (InpFirstEntryMaType == MA_SIMPLE ? "SMA" : "EMA"),
-         " | FirstEntryBullishCandle: ", (InpUseFirstEntryBullishCandle ? "true" : "false"),
-         " | UseCloseLock: ", (InpUseCloseLock ? "true" : "false"),
-         " | PriorityCloseOrder: ", (InpUsePriorityCloseOrder ? "true" : "false"),
-         " | UseAsyncClose: ", (InpUseAsyncClose ? "true" : "false"),
-         " | CloseDeviationPips: ", DoubleToString(InpCloseDeviationPips, 1),
-         " | CloseDeviationPoints(actual): ", (string)CloseDeviationPointsFromPips(g_symbol, InpCloseDeviationPips),
-         " | CloseAttemptsPerRun: ", (string)InpCloseAttemptsPerRun,
-         " | CloseLockTimerMs: ", (string)InpCloseLockTimerMs,
-         " | MaxSpreadFirst: ", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
-         " | MaxSpreadGrid: ", DoubleToString(InpMaxSpreadGridEntryPips, 1),
-         " | UseTimeFilter: ", (InpUseTimeFilter ? "true" : "false"),
-         " | StartHour: ", (string)InpStartHourBroker,
-         " | PauseHour: ", (string)InpPauseHourBroker,
-         " | Use last level on exceed: ", (InpUseLastLevelIfExceeded ? "true" : "false"),
-         " | Basket TP default: ", DoubleToString(InpBasketTPDefaultMoney, 2),
-         " | Basket TP by grid: ", InpBasketTPByGridMoney,
-         " | Floating DD stop: ", DoubleToString(InpFloatingDDStopMoney, 2),
-         " | Basket trail: ", (InpUseBasketTrail ? "true" : "false"),
-         " | Trail grid from: ", (string)InpTrailGridFrom,
-         " | Trail start: ", DoubleToString(InpTrailStartMoney, 2),
-         " | Trail distance %: ", DoubleToString(InpTrailDistancePercent, 2),
-         " | Max positions: ", g_maxPositions);
+         " | Levels=", g_levelCount,
+         " | CSV=", InpTableFile,
+         " | CommonFiles=", (InpUseCommonFiles ? "true" : "false"),
+         " | FirstEntryRSI=", (InpUseFirstEntryRsiFilter ? "true" : "false"),
+         " | FirstEntryMA=", (InpUseFirstEntryMaFilter ? "true" : "false"),
+         " | MA=", (InpFirstEntryMaType == MA_SIMPLE ? "SMA" : "EMA"),
+         " | MAperiod=", (string)InpFirstEntryMaPeriod);
+
+   Print("Init risk/execution | BullishCandle=", (InpUseFirstEntryBullishCandle ? "true" : "false"),
+         " | UseCloseLock=", (InpUseCloseLock ? "true" : "false"),
+         " | PriorityClose=", (InpUsePriorityCloseOrder ? "true" : "false"),
+         " | UseAsyncClose=", (InpUseAsyncClose ? "true" : "false"),
+         " | CloseDevPips=", DoubleToString(InpCloseDeviationPips, 1),
+         " | CloseDevPoints=", (string)CloseDeviationPointsFromPips(g_symbol, InpCloseDeviationPips),
+         " | CloseAttempts=", (string)InpCloseAttemptsPerRun,
+         " | CloseLockTimerMs=", (string)InpCloseLockTimerMs,
+         " | MaxSpreadFirst=", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
+         " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1));
+
+   Print("Init session/exit | UseTimeFilter=", (InpUseTimeFilter ? "true" : "false"),
+         " | SessionMode=", SessionTimeModeLabel(),
+         " | BrokerUTCOffset=", (string)BrokerUtcOffsetHoursNow(),
+         " | StartHour=", (string)InpStartHourBroker,
+         " | PauseHour=", (string)InpPauseHourBroker,
+         " | UseLastLevelOnExceed=", (InpUseLastLevelIfExceeded ? "true" : "false"),
+         " | BasketTPDefault=", DoubleToString(InpBasketTPDefaultMoney, 2),
+         " | BasketTPByGrid=", InpBasketTPByGridMoney,
+         " | FloatingDDStop=", DoubleToString(InpFloatingDDStopMoney, 2),
+         " | BasketTrail=", (InpUseBasketTrail ? "true" : "false"),
+         " | TrailGridFrom=", (string)InpTrailGridFrom,
+         " | TrailStart=", DoubleToString(InpTrailStartMoney, 2),
+         " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
+         " | MaxPositions=", g_maxPositions);
 
    if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
       Print("Telegram setup | allow_url=https://api.telegram.org");
@@ -1220,7 +1307,8 @@ int OnInit()
    for(int i = 0; i < g_levelCount; i++)
    {
       Print("Level ", (i + 1), " | lot=", DoubleToString(g_levels[i].lot, 2),
-            " | gridPips=", DoubleToString(g_levels[i].gridPips, 1));
+            " | gridPips=", DoubleToString(g_levels[i].gridPips, 1),
+            " | tpMoney=", DoubleToString(g_levels[i].tpMoney, 2));
    }
 
    return INIT_SUCCEEDED;
@@ -1352,10 +1440,17 @@ void OnTick()
          }
          return;
       }
+      int currentLevelIndex = -1;
+      double currentLevelLot = 0.0;
+      double currentLevelGridPips = 0.0;
+      double currentLevelTpMoney = 0.0;
+      GetCurrentGridLevel(posCount, currentLevelIndex, currentLevelLot, currentLevelGridPips, currentLevelTpMoney);
+
       double forcedTpMoney = 0.0;
       bool forceTrailOff = false;
       // Use fixed TP by grid for grids below TrailGridFrom.
-      GetForcedTpByGrid(posCount, forcedTpMoney, forceTrailOff);
+      GetForcedTpByGrid(posCount, currentLevelTpMoney, forcedTpMoney, forceTrailOff);
+      const double trailStartMoney = (currentLevelTpMoney > 0.0 ? currentLevelTpMoney : InpTrailStartMoney);
 
       const bool useTrailForThisGrid =
          (!forceTrailOff &&
@@ -1372,13 +1467,15 @@ void OnTick()
       double tpGuidePrice = 0.0;
       if(useTrailForThisGrid)
       {
-         if(!g_trailActive && InpTrailStartMoney > 0.0)
-            tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, InpTrailStartMoney, profit);
+         if(!g_trailActive && trailStartMoney > 0.0)
+            tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, trailStartMoney, profit);
          else if(g_trailActive && g_trailPeakProfit > 0.0)
             tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, g_trailPeakProfit, profit);
       }
       else if(forcedTpMoney > 0.0)
          tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, forcedTpMoney, profit);
+      else if(currentLevelTpMoney > 0.0)
+         tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, currentLevelTpMoney, profit);
       else if(InpBasketTPDefaultMoney > 0.0)
          tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, InpBasketTPDefaultMoney, profit);
 
@@ -1430,6 +1527,34 @@ void OnTick()
          return;
       }
 
+      if(!useTrailForThisGrid &&
+         currentLevelTpMoney > 0.0 && profit >= currentLevelTpMoney)
+      {
+         Print("Level TP hit | grid=", posCount,
+               " | profit=", DoubleToString(profit, 2),
+               " | target=", DoubleToString(currentLevelTpMoney, 2));
+         if(InpUseCloseLock)
+         {
+            ActivateCloseLock("level_tp");
+            ProcessCloseLock(posCount);
+         }
+         else
+         {
+            if(!IsTradeAllowed())
+            {
+               Print("Level TP wait | trade not allowed");
+               return;
+            }
+
+            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
+            if(remain == 0)
+               ResetTrailState();
+            else
+               Print("Level TP close partial | remain=", remain);
+         }
+         return;
+      }
+
       // Fixed basket TP default is used only when trailing is not active for this grid.
       if(!forceTrailOff && !useTrailForThisGrid &&
          InpBasketTPDefaultMoney > 0.0 && profit >= InpBasketTPDefaultMoney)
@@ -1461,7 +1586,7 @@ void OnTick()
       // Trailing profit is used from configured trail start grid onward.
       if(useTrailForThisGrid)
       {
-         if(!g_trailActive && profit >= InpTrailStartMoney)
+         if(!g_trailActive && trailStartMoney > 0.0 && profit >= trailStartMoney)
          {
             g_trailActive = true;
             g_trailPeakProfit = profit;
@@ -1527,8 +1652,9 @@ void OnTick()
 
    double lot;
    double gridPips;
+   double tpMoney;
    int levelIndex = -1;
-   if(!GetNextLevelByPosition(posCount, levelIndex, lot, gridPips))
+   if(!GetLevelByPositionCount(posCount, levelIndex, lot, gridPips, tpMoney))
       return;
 
    if(posCount == 0)
@@ -1567,7 +1693,8 @@ void OnTick()
 
       Print("Open grid entry | level=", (levelIndex + 1),
             " | lot=", DoubleToString(lot, 2),
-            " | gridPips=", DoubleToString(gridPips, 1));
+            " | gridPips=", DoubleToString(gridPips, 1),
+            " | tpMoney=", DoubleToString(tpMoney, 2));
       OpenBuy(g_symbol, lot, "TableGridBuy");
    }
 }
