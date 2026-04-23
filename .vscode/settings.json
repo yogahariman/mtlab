@@ -3,5 +3,16 @@
   "files.associations": {
     "*.mq5": "plaintext",
     "*.mqh": "plaintext"
+  },
+  "python-envs.pythonProjects": [
+    {
+      "path": ".",
+      "envManager": "ms-python.python:system",
+      "packageManager": "ms-python.python:pip"
+    }
+  ],
+  "python.defaultInterpreterPath": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+  "terminal.integrated.env.windows": {
+    "MPLCONFIGDIR": "C:\\Users\\user\\mtlab\\.matplotlib"
   }
 }
