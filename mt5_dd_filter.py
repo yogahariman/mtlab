@@ -14,7 +14,7 @@ INPUT_DIR = Path("/Drive/D/mt5/BackTest_TableGrid_2020")
 INPUT_FILES = [str(INPUT_DIR / f"{n}.csv") for n in range(10, 1001, 10)]
 
 # Hardcode max DD di sini.
-MAX_DD = 3000
+MAX_DD = 10000
 
 # Hardcode output file di sini.
 DATES_OUTPUT_FILE = str(INPUT_DIR / "filtered_unique_dates.csv")

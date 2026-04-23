@@ -1,7 +1,0 @@
-date,time,balance,equity,deposit_load,dd,source_file
-2025.09.28,00:00,1000000.00,1000000.00,0.0000,0.00,/Drive/D/mtlab/sample_a.csv
-2025.09.29,01:06,1000010.07,999998.59,0.0000,11.48,/Drive/D/mtlab/sample_a.csv
-2025.09.29,03:21,1000010.07,1000009.89,0.0038,0.18,/Drive/D/mtlab/sample_a.csv
-2025.09.29,03:25,1000010.07,1000010.07,0.0000,0.00,/Drive/D/mtlab/sample_b.csv
-2025.09.29,03:26,1000020.07,1000009.31,0.0000,10.76,/Drive/D/mtlab/sample_b.csv
-2025.09.29,03:43,1000020.07,1000018.02,0.0038,2.05,/Drive/D/mtlab/sample_b.csv
