@@ -1,5 +1,5 @@
 //+----------------------------------------------------------------------+
-//| XAUUSD_TableGrid_Martingale_BuyOnly.mq5                              |
+//| XAU_GridMarti_BuyOnly.mq5                              |
 //| Buy-only table-driven grid EA for XAUUSD (MT5 Hedging)               |
 // Setting Telegram                                                      |
 // Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
@@ -72,10 +72,15 @@ input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input int    InpTrailGridFrom           = 10;     // Trailing starts from this grid count
 input double InpTrailStartMoney         = 18.0;   // Legacy fallback trail start when CSV tpMoney is empty/legacy 2-column CSV
-input double InpTrailDistancePercent    = 33.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
+input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 
 input group "Telegram Alerts"
 input bool   InpNotifyFloatingSLStop    = true;    // Send Telegram alert when floating SL stop is triggered
+
+input group "Daily Stats"
+input bool   InpEnableDailyStats        = true;    // Track and save daily profit + max DD for this EA (symbol+magic)
+input string InpDailyStatsFile          = "xau_daily_stats.csv"; // Output CSV file in MQL5/Files or Common/Files
+input bool   InpLogDailyStatsSummary    = true;    // Print daily summary when day changes/deinit
 
 struct SLevel
 {
@@ -105,6 +110,13 @@ int    g_closeLockLastRemain = -1;
 bool   g_closeLockWaitTradePrinted = false;
 bool   g_stopTradingByFloatingSL = false;
 bool   g_sessionPauseUntilStart = false;
+bool   g_dailyStatsInitialized = false;
+int    g_dailyDateKey = 0;
+datetime g_dailyStartTime = 0;
+double g_dailyClosedProfit = 0.0;
+double g_dailyLastFloatingProfit = 0.0;
+double g_dailyPeakTotalProfit = 0.0;
+double g_dailyMaxDd = 0.0;
 
 string GuideLineName(const string suffix)
 {
@@ -980,6 +992,171 @@ bool ProcessCloseLock(const int posCount)
    return true;
 }
 
+int DateKeyFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   return (dt.year * 10000 + dt.mon * 100 + dt.day);
+}
+
+datetime DayStartFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   return StructToTime(dt);
+}
+
+string DateYmdFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   return StringFormat("%04d-%02d-%02d", dt.year, dt.mon, dt.day);
+}
+
+bool IsExitDealEntryType(const long dealEntry)
+{
+   return (dealEntry == DEAL_ENTRY_OUT ||
+           dealEntry == DEAL_ENTRY_OUT_BY ||
+           dealEntry == DEAL_ENTRY_INOUT);
+}
+
+double CalcClosedProfitForRange(const datetime fromTime, const datetime toTime)
+{
+   if(toTime < fromTime)
+      return 0.0;
+
+   if(!HistorySelect(fromTime, toTime))
+      return 0.0;
+
+   double total = 0.0;
+   const int deals = HistoryDealsTotal();
+   for(int i = 0; i < deals; i++)
+   {
+      const ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0)
+         continue;
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != g_symbol)
+         continue;
+      if((long)HistoryDealGetInteger(deal, DEAL_MAGIC) != InpMagic)
+         continue;
+
+      const long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(!IsExitDealEntryType(entry))
+         continue;
+
+      const double profit = HistoryDealGetDouble(deal, DEAL_PROFIT);
+      const double swap = HistoryDealGetDouble(deal, DEAL_SWAP);
+      const double commission = HistoryDealGetDouble(deal, DEAL_COMMISSION);
+      total += (profit + swap + commission);
+   }
+
+   return total;
+}
+
+bool AppendDailyStatsRow()
+{
+   if(!InpEnableDailyStats || !g_dailyStatsInitialized)
+      return true;
+
+   int flags = FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI;
+   if(InpUseCommonFiles)
+      flags |= FILE_COMMON;
+
+   ResetLastError();
+   const int handle = FileOpen(InpDailyStatsFile, flags, ',');
+   if(handle == INVALID_HANDLE)
+   {
+      Print("Daily stats file open fail | file=", InpDailyStatsFile,
+            " | err=", GetLastError());
+      return false;
+   }
+
+   const bool needHeader = (FileSize(handle) <= 0);
+   FileSeek(handle, 0, SEEK_END);
+
+   if(needHeader)
+   {
+      FileWrite(handle, "date", "symbol", "magic",
+                "closed_profit", "end_floating", "end_total", "max_dd");
+   }
+
+   const double endFloating = g_dailyLastFloatingProfit;
+   const double endTotal = g_dailyClosedProfit + endFloating;
+   FileWrite(handle,
+             DateYmdFromTime(g_dailyStartTime),
+             g_symbol,
+             (string)InpMagic,
+             DoubleToString(g_dailyClosedProfit, 2),
+             DoubleToString(endFloating, 2),
+             DoubleToString(endTotal, 2),
+             DoubleToString(g_dailyMaxDd, 2));
+   FileClose(handle);
+
+   if(InpLogDailyStatsSummary)
+   {
+      Print("Daily stats saved | date=", DateYmdFromTime(g_dailyStartTime),
+            " | closed=", DoubleToString(g_dailyClosedProfit, 2),
+            " | endFloating=", DoubleToString(endFloating, 2),
+            " | endTotal=", DoubleToString(endTotal, 2),
+            " | maxDD=", DoubleToString(g_dailyMaxDd, 2),
+            " | file=", InpDailyStatsFile);
+   }
+
+   return true;
+}
+
+void StartDailyStats(const datetime nowTime, const double floatingProfitNow)
+{
+   g_dailyStartTime = DayStartFromTime(nowTime);
+   g_dailyDateKey = DateKeyFromTime(nowTime);
+   g_dailyClosedProfit = CalcClosedProfitForRange(g_dailyStartTime, nowTime);
+   g_dailyLastFloatingProfit = floatingProfitNow;
+   g_dailyPeakTotalProfit = (g_dailyClosedProfit + floatingProfitNow);
+   g_dailyMaxDd = 0.0;
+   g_dailyStatsInitialized = true;
+
+   if(InpLogDailyStatsSummary)
+   {
+      Print("Daily stats start | date=", DateYmdFromTime(g_dailyStartTime),
+            " | closed_so_far=", DoubleToString(g_dailyClosedProfit, 2),
+            " | floating_now=", DoubleToString(floatingProfitNow, 2));
+   }
+}
+
+void UpdateDailyStats(const double floatingProfitNow)
+{
+   if(!InpEnableDailyStats)
+      return;
+
+   const datetime nowTime = TimeCurrent();
+   const int nowDateKey = DateKeyFromTime(nowTime);
+
+   if(!g_dailyStatsInitialized)
+   {
+      StartDailyStats(nowTime, floatingProfitNow);
+      return;
+   }
+
+   if(nowDateKey != g_dailyDateKey)
+   {
+      AppendDailyStatsRow();
+      StartDailyStats(nowTime, floatingProfitNow);
+      return;
+   }
+
+   g_dailyLastFloatingProfit = floatingProfitNow;
+   const double nowTotal = g_dailyClosedProfit + floatingProfitNow;
+   if(nowTotal > g_dailyPeakTotalProfit)
+      g_dailyPeakTotalProfit = nowTotal;
+
+   const double dd = g_dailyPeakTotalProfit - nowTotal;
+   if(dd > g_dailyMaxDd)
+      g_dailyMaxDd = dd;
+}
+
 void PrintCsvLocationGuide(const string filename)
 {
    const string dataPath = TerminalInfoString(TERMINAL_DATA_PATH);
@@ -1301,6 +1478,10 @@ int OnInit()
          " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
          " | MaxPositions=", g_maxPositions);
 
+   Print("Init daily_stats | enabled=", (InpEnableDailyStats ? "true" : "false"),
+         " | file=", InpDailyStatsFile,
+         " | use_common=", (InpUseCommonFiles ? "true" : "false"));
+
    if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
       Print("Telegram setup | allow_url=https://api.telegram.org");
 
@@ -1318,6 +1499,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ClearProfitGuideLines();
+   AppendDailyStatsRow();
 
    if(g_rsiHandle != INVALID_HANDLE)
    {
@@ -1341,6 +1523,45 @@ void OnTimer()
    ProcessCloseLock(posCount);
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   (void)request;
+   (void)result;
+
+   if(!g_ready || !InpEnableDailyStats)
+      return;
+
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0)
+      return;
+
+   const ulong deal = trans.deal;
+   if(!HistoryDealSelect(deal))
+      return;
+
+   if(HistoryDealGetString(deal, DEAL_SYMBOL) != g_symbol)
+      return;
+   if((long)HistoryDealGetInteger(deal, DEAL_MAGIC) != InpMagic)
+      return;
+
+   const long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+   if(!IsExitDealEntryType(entry))
+      return;
+
+   if(!g_dailyStatsInitialized)
+      return;
+
+   const datetime dealTime = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+   if(DateKeyFromTime(dealTime) != g_dailyDateKey)
+      return;
+
+   const double profit = HistoryDealGetDouble(deal, DEAL_PROFIT);
+   const double swap = HistoryDealGetDouble(deal, DEAL_SWAP);
+   const double commission = HistoryDealGetDouble(deal, DEAL_COMMISSION);
+   g_dailyClosedProfit += (profit + swap + commission);
+}
+
 void OnTick()
 {
    if(!g_ready)
@@ -1350,6 +1571,8 @@ void OnTick()
       return;
 
    const int posCount = CountBuyPositions(g_symbol, InpMagic);
+   const double floatingProfitNow = (posCount > 0 ? TotalProfit(g_symbol, InpMagic) : 0.0);
+   UpdateDailyStats(floatingProfitNow);
 
    if(posCount <= 0)
    {
@@ -1402,7 +1625,7 @@ void OnTick()
 
    if(posCount > 0)
    {
-      const double profit = TotalProfit(g_symbol, InpMagic);
+      const double profit = floatingProfitNow;
       if(InpFloatingDDStopMoney > 0.0 && profit <= -InpFloatingDDStopMoney)
       {
          g_stopTradingByFloatingSL = true;
