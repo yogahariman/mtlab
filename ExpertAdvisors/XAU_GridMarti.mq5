@@ -1,6 +1,6 @@
 //+----------------------------------------------------------------------+
-//| XAU_GridMarti_BuyOnly.mq5                              |
-//| Buy-only table-driven grid EA for XAUUSD (MT5 Hedging)               |
+//| XAU_GridMarti.mq5                                      |
+//| Directional table-driven grid EA for XAUUSD (MT5 Hedging)            |
 // Setting Telegram                                                      |
 // Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
 // https://api.telegram.org
@@ -25,9 +25,16 @@ enum ESessionTimeMode
    SESSION_TIME_WIB = 2
 };
 
+enum ETradeMode
+{
+   TRADE_BUY_ONLY = 0,
+   TRADE_SELL_ONLY = 1
+};
+
 input group "General"
 input long   InpMagic                   = 260414; // Magic number
 input bool   InpShowProfitGuideLines    = true;   // Show TP/trailing guide lines on chart
+input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
 input string InpTableFile               = "xau_levels.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
@@ -49,16 +56,16 @@ input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 
 input group "Trading Session"
-input bool   InpUseTimeFilter           = false;   // Enable trading session filter
-input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
-input int    InpStartHourBroker         = 9;      // Start first entries from this hour in selected session timezone (00-23)
-input int    InpPauseHourBroker         = 1;     // Pause-prep starts from this hour in selected session timezone (00-23)
+input bool   InpUseTimeFilter           = true;   // Enable trading session filter
+input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_BROKER; // Session input timezone: broker/UTC/WIB(UTC+7)
+input int    InpStartHourBroker         = 2;      // Start first entries from this hour in selected session timezone (00-23)
+input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
-input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first buy entry only
+input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
-input bool   InpUseFirstEntryBullishCandle = false; // First entry: previous candle must be bullish
+input bool   InpUseFirstEntryBullishCandle = false; // First entry candle direction filter (buy=bullish, sell=bearish)
 input int    InpFirstEntryMaPeriod      = 5;      // First entry MA period
 input EFirstEntryMaType InpFirstEntryMaType = MA_EXPONENTIAL; // MA type: simple/exponential
 input int    InpRsiPeriod               = 14;     // RSI period
@@ -80,7 +87,6 @@ input int    InpEaActiveIntervalMinutes = 60;      // Periodic active message in
 
 input group "Daily Stats"
 input bool   InpEnableDailyStats        = true;    // Track and save daily profit + max DD for this EA (symbol+magic)
-input string InpDailyStatsFile          = "xau_daily_stats.csv"; // Output CSV file in MQL5/Files or Common/Files
 input bool   InpLogDailyStatsSummary    = true;    // Print daily summary when day changes/deinit
 
 struct SLevel
@@ -118,6 +124,58 @@ double g_dailyLastFloatingProfit = 0.0;
 double g_dailyPeakTotalProfit = 0.0;
 double g_dailyMaxDd = 0.0;
 datetime g_lastActiveNotifyTime = 0;
+string g_dailyStatsFile = "";
+
+string BuildDailyStatsFileFromTableFile(const string tableFile)
+{
+   string baseName = tableFile;
+   string extension = ".csv";
+   const int len = StringLen(baseName);
+   int dotIndex = -1;
+   for(int i = len - 1; i >= 0; i--)
+   {
+      if(StringGetCharacter(baseName, i) == '.')
+      {
+         dotIndex = i;
+         break;
+      }
+   }
+
+   if(dotIndex > 0)
+   {
+      extension = StringSubstr(baseName, dotIndex);
+      baseName = StringSubstr(baseName, 0, dotIndex);
+   }
+
+   return (baseName + "_daily_stats" + extension);
+}
+
+bool IsSellMode()
+{
+   return (InpTradeMode == TRADE_SELL_ONLY);
+}
+
+ENUM_POSITION_TYPE ActivePositionType()
+{
+   return (IsSellMode() ? POSITION_TYPE_SELL : POSITION_TYPE_BUY);
+}
+
+ENUM_ORDER_TYPE ActiveOrderType()
+{
+   return (IsSellMode() ? ORDER_TYPE_SELL : ORDER_TYPE_BUY);
+}
+
+double ActiveMarketPrice(const string symbol)
+{
+   return (IsSellMode()
+           ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+           : SymbolInfoDouble(symbol, SYMBOL_BID));
+}
+
+string ActiveSideLabel()
+{
+   return (IsSellMode() ? "SELL" : "BUY");
+}
 
 string GuideLineName(const string suffix)
 {
@@ -152,12 +210,14 @@ void ClearProfitGuideLines()
 
 double BasketProfitSlopePerPrice(const string symbol, const long magic)
 {
-   const double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
+   const ENUM_ORDER_TYPE orderType = ActiveOrderType();
+   const double priceNow = ActiveMarketPrice(symbol);
    const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   if(bid <= 0.0 || point <= 0.0)
+   if(priceNow <= 0.0 || point <= 0.0)
       return 0.0;
 
-   const double bidUp = bid + point;
+   const double priceUp = priceNow + point;
    double slope = 0.0;
    const int total = PositionsTotal();
    for(int i = 0; i < total; i++)
@@ -167,7 +227,7 @@ double BasketProfitSlopePerPrice(const string symbol, const long magic)
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
 
       const double vol = PositionGetDouble(POSITION_VOLUME);
       const double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -176,16 +236,16 @@ double BasketProfitSlopePerPrice(const string symbol, const long magic)
 
       double p0 = 0.0;
       double p1 = 0.0;
-      if(!OrderCalcProfit(ORDER_TYPE_BUY, symbol, vol, openPrice, bid, p0))
+      if(!OrderCalcProfit(orderType, symbol, vol, openPrice, priceNow, p0))
          continue;
-      if(!OrderCalcProfit(ORDER_TYPE_BUY, symbol, vol, openPrice, bidUp, p1))
+      if(!OrderCalcProfit(orderType, symbol, vol, openPrice, priceUp, p1))
          continue;
 
       slope += (p1 - p0) / point;
    }
 
    // Fallback for rare brokers/symbols where OrderCalcProfit is unavailable.
-   if(slope <= 0.0)
+   if(MathAbs(slope) <= 1e-12)
    {
       const double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
       const double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -199,11 +259,14 @@ double BasketProfitSlopePerPrice(const string symbol, const long magic)
             if(!PositionSelectByTicket(ticket)) continue;
             if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
             if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-            if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+            if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
             lots += PositionGetDouble(POSITION_VOLUME);
          }
          if(lots > 0.0)
-            slope = (tickValue / tickSize) * lots;
+         {
+            const double sign = (activeType == POSITION_TYPE_SELL ? -1.0 : 1.0);
+            slope = sign * (tickValue / tickSize) * lots;
+         }
       }
    }
 
@@ -213,16 +276,16 @@ double BasketProfitSlopePerPrice(const string symbol, const long magic)
 double BasketBidForTargetProfit(const string symbol, const long magic, const double targetProfit, const double currentProfit)
 {
    const double slope = BasketProfitSlopePerPrice(symbol, magic);
-   if(slope <= 0.0)
+   if(MathAbs(slope) <= 1e-12)
       return 0.0;
 
-   const double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-   if(bid <= 0.0)
+   const double marketPrice = ActiveMarketPrice(symbol);
+   if(marketPrice <= 0.0)
       return 0.0;
 
    const int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    const double needMove = (targetProfit - currentProfit) / slope;
-   return NormalizeDouble(bid + needMove, digits);
+   return NormalizeDouble(marketPrice + needMove, digits);
 }
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
@@ -396,6 +459,7 @@ double NormalizeVolume(double lot, const string symbol)
 
 int CountBuyPositions(const string symbol, const long magic)
 {
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
    int count = 0;
    const int total = PositionsTotal();
    for(int i = 0; i < total; i++)
@@ -405,7 +469,7 @@ int CountBuyPositions(const string symbol, const long magic)
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
       count++;
    }
    return count;
@@ -413,6 +477,7 @@ int CountBuyPositions(const string symbol, const long magic)
 
 bool GetLatestBuyPosition(const string symbol, const long magic, double &latest_price)
 {
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
    bool found = false;
    datetime latest_time = 0;
    latest_price = 0.0;
@@ -425,7 +490,7 @@ bool GetLatestBuyPosition(const string symbol, const long magic, double &latest_
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
 
       const datetime t = (datetime)PositionGetInteger(POSITION_TIME);
       if(!found || t > latest_time)
@@ -440,6 +505,7 @@ bool GetLatestBuyPosition(const string symbol, const long magic, double &latest_
 
 double TotalProfit(const string symbol, const long magic)
 {
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
    double profit = 0.0;
    const int total = PositionsTotal();
    for(int i = 0; i < total; i++)
@@ -449,7 +515,7 @@ double TotalProfit(const string symbol, const long magic)
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
       profit += PositionGetDouble(POSITION_PROFIT);
    }
    return profit;
@@ -457,6 +523,7 @@ double TotalProfit(const string symbol, const long magic)
 
 int CloseAllBuyPositions(const string symbol, const long magic)
 {
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
    const ulong closeDeviation = CloseDeviationPointsFromPips(symbol, InpCloseDeviationPips);
    const bool useCustomDeviation = (closeDeviation > 0);
    const bool useAsyncClose = InpUseAsyncClose;
@@ -482,7 +549,7 @@ int CloseAllBuyPositions(const string symbol, const long magic)
          if(!PositionSelectByTicket(ticket)) continue;
          if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
          if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
 
          const int n = q + 1;
          ArrayResize(tickets, n);
@@ -533,7 +600,7 @@ int CloseAllBuyPositions(const string symbol, const long magic)
          if(!PositionSelectByTicket(ticket)) continue;
          if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
          if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
 
          const bool closeOk = (useCustomDeviation ?
                                trade.PositionClose(ticket, closeDeviation) :
@@ -556,7 +623,7 @@ int CloseAllBuyPositions(const string symbol, const long magic)
          if(!PositionSelectByTicket(ticket)) continue;
          if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
          if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != POSITION_TYPE_BUY) continue;
+         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
 
          const bool closeOk = (useCustomDeviation ?
                                trade.PositionClose(ticket, closeDeviation) :
@@ -620,7 +687,9 @@ bool OpenBuy(const string symbol, const double lot, const string comment)
       return false;
 
    const double vol = NormalizeVolume(lot, symbol);
-   const bool ok = trade.Buy(vol, symbol, 0.0, 0.0, 0.0, comment);
+   const bool ok = (IsSellMode()
+                    ? trade.Sell(vol, symbol, 0.0, 0.0, 0.0, comment)
+                    : trade.Buy(vol, symbol, 0.0, 0.0, 0.0, comment));
    if(ok)
       g_lastTradeTime = TimeCurrent();
    return ok;
@@ -644,6 +713,11 @@ bool FirstEntryRsiOK()
 
    const double rsiNow = rsiBuf[0];
    const double rsiPrev = rsiBuf[1];
+   if(IsSellMode())
+   {
+      const double sellThreshold = 100.0 - InpRsiThreshold;
+      return (rsiNow > sellThreshold && (rsiPrev - rsiNow) >= InpRsiMinRise);
+   }
    return (rsiNow < InpRsiThreshold && (rsiNow - rsiPrev) >= InpRsiMinRise);
 }
 
@@ -664,11 +738,25 @@ bool FirstEntryMaOK()
 
    if(InpUseFirstEntryFullCandleBelowMa)
    {
-      // Use previous closed candle: require full candle below MA (high < MA).
+      // Use previous closed candle with full-candle relation to MA.
+      if(IsSellMode())
+      {
+         const double l = iLow(g_symbol, PERIOD_CURRENT, 1);
+         if(l == 0.0)
+            return false;
+         return (l > maBuf[1]);
+      }
+
       const double h = iHigh(g_symbol, PERIOD_CURRENT, 1);
       if(h == 0.0)
          return false;
       return (h < maBuf[1]);
+   }
+
+   if(IsSellMode())
+   {
+      const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
+      return (ask > maBuf[0]);
    }
 
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
@@ -685,6 +773,9 @@ bool FirstEntryBullishCandleOK()
    const double c = iClose(g_symbol, PERIOD_CURRENT, 1);
    if(o == 0.0 && c == 0.0)
       return false;
+
+   if(IsSellMode())
+      return (c < o);
 
    return (c > o);
 }
@@ -940,10 +1031,10 @@ bool AppendDailyStatsRow()
       flags |= FILE_COMMON;
 
    ResetLastError();
-   const int handle = FileOpen(InpDailyStatsFile, flags, ',');
+   const int handle = FileOpen(g_dailyStatsFile, flags, ',');
    if(handle == INVALID_HANDLE)
    {
-      Print("Daily stats file open fail | file=", InpDailyStatsFile,
+      Print("Daily stats file open fail | file=", g_dailyStatsFile,
             " | err=", GetLastError());
       return false;
    }
@@ -976,7 +1067,7 @@ bool AppendDailyStatsRow()
             " | endFloating=", DoubleToString(endFloating, 2),
             " | endTotal=", DoubleToString(endTotal, 2),
             " | maxDD=", DoubleToString(g_dailyMaxDd, 2),
-            " | file=", InpDailyStatsFile);
+            " | file=", g_dailyStatsFile);
    }
 
    return true;
@@ -1234,6 +1325,7 @@ int OnInit()
    }
 
    PrintCsvLocationGuide(InpTableFile);
+   g_dailyStatsFile = BuildDailyStatsFileFromTableFile(InpTableFile);
 
    if(!LoadLevelTableFromCsv(InpTableFile))
       return INIT_FAILED;
@@ -1302,6 +1394,7 @@ int OnInit()
 
    Print("EA init OK | Symbol=", g_symbol,
          " | Levels=", g_levelCount,
+         " | Mode=", ActiveSideLabel(),
          " | CSV=", InpTableFile,
          " | CommonFiles=", (InpUseCommonFiles ? "true" : "false"),
          " | FirstEntryRSI=", (InpUseFirstEntryRsiFilter ? "true" : "false"),
@@ -1335,7 +1428,7 @@ int OnInit()
          " | MaxPositions=", g_maxPositions);
 
    Print("Init daily_stats | enabled=", (InpEnableDailyStats ? "true" : "false"),
-         " | file=", InpDailyStatsFile,
+         " | file=", g_dailyStatsFile,
          " | use_common=", (InpUseCommonFiles ? "true" : "false"));
 
    if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
@@ -1759,8 +1852,10 @@ void OnTick()
       if(!FirstEntryBullishCandleOK())
          return;
 
-      Print("Open first entry | level=", (levelIndex + 1), " | lot=", DoubleToString(lot, 2));
-      OpenBuy(g_symbol, lot, "TableGridBuy");
+      Print("Open first entry | level=", (levelIndex + 1),
+            " | side=", ActiveSideLabel(),
+            " | lot=", DoubleToString(lot, 2));
+      OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
       return;
    }
 
@@ -1769,8 +1864,12 @@ void OnTick()
       return;
 
    const double gridPrice = gridPips * PipPoint(g_symbol);
+   const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
-   if(bid < (latest_price - gridPrice))
+   const bool shouldOpenGrid = (IsSellMode()
+                                ? (ask > (latest_price + gridPrice))
+                                : (bid < (latest_price - gridPrice)));
+   if(shouldOpenGrid)
    {
       if(!IsGridEntryAllowedNow(posCount))
          return;
@@ -1779,9 +1878,10 @@ void OnTick()
          return;
 
       Print("Open grid entry | level=", (levelIndex + 1),
+            " | side=", ActiveSideLabel(),
             " | lot=", DoubleToString(lot, 2),
             " | gridPips=", DoubleToString(gridPips, 1),
             " | tpMoney=", DoubleToString(tpMoney, 2));
-      OpenBuy(g_symbol, lot, "TableGridBuy");
+      OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
    }
 }

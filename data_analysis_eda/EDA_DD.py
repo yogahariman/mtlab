@@ -8,10 +8,10 @@ import numpy as np
 # =========================
 # Konfigurasi utama
 # =========================
-INPUT_FILE = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\250.csv")
-THRESHOLD = 3000  # threshold = modal
+INPUT_FILE = Path(r"/Drive/D/mt5/BackTest_TableGrid_2020/400.csv")
 BUFFER_PCT = 0.20  # buffer modal, contoh 0.20 = 20%
 TARGET_BREACH_PCT = 5.0
+DETAIL_PROFILE = "Balanced"  # opsi: Aggressive, Balanced, Conservative
 
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
 
@@ -86,7 +86,6 @@ def read_rows(path: Path):
 
 def main():
     print("Input file:", INPUT_FILE)
-    print("Threshold modal:", THRESHOLD)
 
     if not INPUT_FILE.exists():
         raise FileNotFoundError(f"File tidak ditemukan: {INPUT_FILE}")
@@ -155,6 +154,11 @@ def main():
         f"{balanced_modal_with_buffer:,.2f}"
     )
 
+    threshold_by_profile = {row["profile"]: float(row["modal_raw"]) for row in rec_rows}
+    print("\nThreshold dari quantile profile:")
+    for profile in ["Aggressive", "Balanced", "Conservative"]:
+        print(f"- {profile:<12}: {threshold_by_profile[profile]:,.2f}")
+
     # Kurva quantile: modal vs breach% untuk analisa trade-off
     q_grid = np.linspace(0.80, 0.999, 200)
     modal_curve = analysis_df["weekly_max_dd"].quantile(q_grid).to_numpy()
@@ -185,7 +189,14 @@ def main():
 
     for x, y, lbl in zip(marker_modal, marker_breach, marker_labels):
         plt.scatter([x], [y], s=50)
-        plt.text(x, y, f" {lbl}", va="bottom")
+        plt.text(
+            x,
+            y,
+            f" {lbl} (${x:,.0f})",
+            va="bottom",
+            fontsize=9,
+            bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"},
+        )
 
     plt.xlabel("Modal")
     plt.ylabel("Breach (%)")
@@ -195,70 +206,36 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    breach = analysis_df["weekly_max_dd"] > THRESHOLD
-    breach_df = analysis_df[breach].copy()
+    print("\n=== Breach Summary per Profile ===")
     total_weeks = len(analysis_df)
-    weeks_above = int(breach.sum())
-    weeks_below_or_equal = int(total_weeks - weeks_above)
+    for profile in ["Aggressive", "Balanced", "Conservative"]:
+        threshold = threshold_by_profile[profile]
+        breach = analysis_df["weekly_max_dd"] > threshold
+        breach_df = analysis_df[breach].copy()
+        weeks_above = int(breach.sum())
 
-    print(f"Threshold modal : {THRESHOLD:,.2f}")
-    print(f"Breach count    : {weeks_above:,}")
-    print(f"Breach %        : {breach.mean() * 100:.2f}%")
+        print(f"\n[{profile}]")
+        print(f"Threshold modal : {threshold:,.2f}")
+        print(f"Total weeks     : {total_weeks:,}")
+        print(f"Breach count    : {weeks_above:,}")
+        print(f"Breach %        : {breach.mean() * 100:.2f}%")
 
-    if len(breach_df) > 0:
-        print(f"Avg excess DD   : {(breach_df['weekly_max_dd'] - THRESHOLD).mean():,.2f}")
-        print(f"Worst excess DD : {(breach_df['weekly_max_dd'] - THRESHOLD).max():,.2f}")
-    else:
-        print("Tidak ada DD yang melewati threshold.")
-
-    plt.figure(figsize=(8, 5))
-    categories = [f"<= {THRESHOLD}", f"> {THRESHOLD}"]
-    values = [weeks_below_or_equal, weeks_above]
-    colors = ["#4C78A8", "#E45756"]
-
-    bars = plt.bar(categories, values, color=colors, width=0.6)
-    plt.title("Jumlah Minggu Berdasarkan Threshold DD")
-    plt.xlabel("Kategori Weekly Max DD")
-    plt.ylabel("Jumlah Minggu")
-
-    # Ringkasan jumlah minggu di plot
-    summary_text = (
-        f"Total minggu: {total_weeks}\n"
-        f"> Threshold: {weeks_above}\n"
-        f"<= Threshold: {weeks_below_or_equal}"
-    )
-    plt.text(
-        0.98,
-        0.95,
-        summary_text,
-        transform=plt.gca().transAxes,
-        ha="right",
-        va="top",
-        fontsize=9,
-        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "gray"},
-    )
-
-    # Tampilkan angka frekuensi di atas masing-masing bar
-    for bar, val in zip(bars, values):
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            f"{val}",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            fontweight="bold",
-        )
-
-    plt.grid(alpha=0.25)
-    plt.show()
+        if len(breach_df) > 0:
+            print(f"Avg excess DD   : {(breach_df['weekly_max_dd'] - threshold).mean():,.2f}")
+            print(f"Worst excess DD : {(breach_df['weekly_max_dd'] - threshold).max():,.2f}")
+        else:
+            print("Tidak ada DD yang melewati threshold.")
 
     # =========================
     # Analisis breach terhadap hari dan jam
     # =========================
-    breach_events = df[df["dd"] > THRESHOLD].copy()
+    detail_profile = DETAIL_PROFILE if DETAIL_PROFILE in threshold_by_profile else "Balanced"
+    detail_threshold = threshold_by_profile[detail_profile]
+    breach_events = df[df["dd"] > detail_threshold].copy()
     if breach_events.empty:
-        print("\nAnalisis hari/jam: tidak ada event DD > threshold.")
+        print(
+            f"\nAnalisis hari/jam [{detail_profile}]: tidak ada event DD > threshold."
+        )
         return
 
     day_names = {
@@ -279,7 +256,8 @@ def main():
     top_day_idx = int(day_counts.idxmax())
     top_hour_idx = int(hour_counts.idxmax())
 
-    print("\n=== Pola DD > Threshold (Intraday) ===")
+    print(f"\n=== Pola DD > Threshold (Intraday, {detail_profile}) ===")
+    print(f"Threshold detail            : {detail_threshold:,.2f}")
     print(f"Total event DD > threshold: {len(breach_events):,}")
     print(f"Hari paling sering         : {day_names[top_day_idx]} ({int(day_counts.max()):,} event)")
     print(f"Jam paling sering          : {top_hour_idx:02d}:00 ({int(hour_counts.max()):,} event)")

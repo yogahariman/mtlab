@@ -7,11 +7,16 @@
   "python-envs.pythonProjects": [
     {
       "path": ".",
-      "envManager": "ms-python.python:system",
-      "packageManager": "ms-python.python:pip"
+      "envManager": "ms-python.python:venv",
+      "packageManager": "ms-python.python:pip",
+      "defaultInterpreterPath": "/home/rfi212/my_env/bin/python"
     }
   ],
   "python.defaultInterpreterPath": "C:\\Users\\user\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+  "terminal.integrated.env.linux": {
+    "VIRTUAL_ENV": "/home/rfi212/my_env",
+    "PATH": "/home/rfi212/my_env/bin:${env:PATH}"
+  },
   "terminal.integrated.env.windows": {
     "MPLCONFIGDIR": "C:\\Users\\user\\mtlab\\.matplotlib"
   }
