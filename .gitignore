@@ -22,3 +22,28 @@ my_env/
 
 # Local analysis outputs
 data_analysis_eda/outputs/
+
+# IDE/OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# MetaTrader build/runtime artifacts
+*.ex5
+*.log
+*.tmp
+*.hst
+*.fxt
+*.tst
+*.cache
+*.dat
+*.err
+*.journal
+tester/
+logs/
+
+# Local MT5 scratch area
+ExpertAdvisors/Temp/

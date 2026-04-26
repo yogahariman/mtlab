@@ -33,11 +33,10 @@ enum ETradeMode
 
 input group "General"
 input long   InpMagic                   = 260414; // Magic number
-input bool   InpShowProfitGuideLines    = true;   // Show TP/trailing guide lines on chart
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "xau_levels.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
+input string InpTableFile               = "T1_320.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when positions exceed table
@@ -45,13 +44,12 @@ input bool   InpUseLastLevelIfExceeded  = true;   // Use last table row when pos
 input group "Risk & Execution"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
-input int    InpCooldownAfterCloseSeconds = 3;   // Cooldown after EA closes all positions (0=disabled)
 input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
 input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
 input bool   InpUseAsyncClose           = true;   // Send close requests asynchronously for faster batch close
 input double InpCloseDeviationPips      = 30.0;   // Max deviation in pips for close requests (<=0 uses platform default)
 input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in one run (keep 1 for async burst)
-input int    InpCloseLockTimerMs        = 100;    // Close-lock timer interval (ms, 0=off)
+input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 
@@ -62,6 +60,7 @@ input int    InpStartHourBroker         = 2;      // Start first entries from th
 input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
+input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
@@ -96,12 +95,20 @@ struct SLevel
    double tpMoney;
 };
 
+struct SPositionSnapshot
+{
+   int count;
+   double totalProfit;
+   bool hasLatestPosition;
+   datetime latestPositionTime;
+   double latestPrice;
+};
+
 CTrade trade;
 string g_symbol = "";
 bool   g_ready  = false;
 
 datetime g_lastTradeTime = 0;
-datetime g_lastCloseAllTime = 0;
 
 SLevel g_levels[];
 int    g_levelCount = 0;
@@ -121,13 +128,17 @@ int    g_dailyDateKey = 0;
 datetime g_dailyStartTime = 0;
 double g_dailyClosedProfit = 0.0;
 double g_dailyLastFloatingProfit = 0.0;
-double g_dailyPeakTotalProfit = 0.0;
 double g_dailyMaxDd = 0.0;
 datetime g_lastActiveNotifyTime = 0;
+datetime g_lastActiveNotifyAttemptTime = 0;
 string g_dailyStatsFile = "";
+bool   g_lastAlgoTradingEnabled = true;
+datetime g_lastFirstEntryBarTime = 0;
+int    g_lastKnownPosCount = 0;
 
 string BuildDailyStatsFileFromTableFile(const string tableFile)
 {
+   const long userId = AccountInfoInteger(ACCOUNT_LOGIN);
    string baseName = tableFile;
    string extension = ".csv";
    const int len = StringLen(baseName);
@@ -147,7 +158,7 @@ string BuildDailyStatsFileFromTableFile(const string tableFile)
       baseName = StringSubstr(baseName, 0, dotIndex);
    }
 
-   return (baseName + "_daily_stats" + extension);
+   return ((string)userId + "_" + baseName + "_daily_stats" + extension);
 }
 
 bool IsSellMode()
@@ -160,132 +171,9 @@ ENUM_POSITION_TYPE ActivePositionType()
    return (IsSellMode() ? POSITION_TYPE_SELL : POSITION_TYPE_BUY);
 }
 
-ENUM_ORDER_TYPE ActiveOrderType()
-{
-   return (IsSellMode() ? ORDER_TYPE_SELL : ORDER_TYPE_BUY);
-}
-
-double ActiveMarketPrice(const string symbol)
-{
-   return (IsSellMode()
-           ? SymbolInfoDouble(symbol, SYMBOL_ASK)
-           : SymbolInfoDouble(symbol, SYMBOL_BID));
-}
-
 string ActiveSideLabel()
 {
    return (IsSellMode() ? "SELL" : "BUY");
-}
-
-string GuideLineName(const string suffix)
-{
-   return "TG_" + g_symbol + "_" + (string)InpMagic + "_" + suffix;
-}
-
-void UpsertGuideLine(const string name, const double price, const color clr, const ENUM_LINE_STYLE style)
-{
-   if(!InpShowProfitGuideLines || price <= 0.0)
-   {
-      if(ObjectFind(0, name) >= 0)
-         ObjectDelete(0, name);
-      return;
-   }
-
-   if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
-
-   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
-}
-
-void ClearProfitGuideLines()
-{
-   ObjectDelete(0, GuideLineName("TP"));
-   ObjectDelete(0, GuideLineName("TRAIL_STOP"));
-}
-
-double BasketProfitSlopePerPrice(const string symbol, const long magic)
-{
-   const ENUM_POSITION_TYPE activeType = ActivePositionType();
-   const ENUM_ORDER_TYPE orderType = ActiveOrderType();
-   const double priceNow = ActiveMarketPrice(symbol);
-   const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   if(priceNow <= 0.0 || point <= 0.0)
-      return 0.0;
-
-   const double priceUp = priceNow + point;
-   double slope = 0.0;
-   const int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
-   {
-      const ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
-
-      const double vol = PositionGetDouble(POSITION_VOLUME);
-      const double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      if(vol <= 0.0 || openPrice <= 0.0)
-         continue;
-
-      double p0 = 0.0;
-      double p1 = 0.0;
-      if(!OrderCalcProfit(orderType, symbol, vol, openPrice, priceNow, p0))
-         continue;
-      if(!OrderCalcProfit(orderType, symbol, vol, openPrice, priceUp, p1))
-         continue;
-
-      slope += (p1 - p0) / point;
-   }
-
-   // Fallback for rare brokers/symbols where OrderCalcProfit is unavailable.
-   if(MathAbs(slope) <= 1e-12)
-   {
-      const double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-      const double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-      if(tickValue > 0.0 && tickSize > 0.0)
-      {
-         double lots = 0.0;
-         for(int i = 0; i < total; i++)
-         {
-            const ulong ticket = PositionGetTicket(i);
-            if(ticket == 0) continue;
-            if(!PositionSelectByTicket(ticket)) continue;
-            if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-            if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
-            if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
-            lots += PositionGetDouble(POSITION_VOLUME);
-         }
-         if(lots > 0.0)
-         {
-            const double sign = (activeType == POSITION_TYPE_SELL ? -1.0 : 1.0);
-            slope = sign * (tickValue / tickSize) * lots;
-         }
-      }
-   }
-
-   return slope;
-}
-
-double BasketBidForTargetProfit(const string symbol, const long magic, const double targetProfit, const double currentProfit)
-{
-   const double slope = BasketProfitSlopePerPrice(symbol, magic);
-   if(MathAbs(slope) <= 1e-12)
-      return 0.0;
-
-   const double marketPrice = ActiveMarketPrice(symbol);
-   if(marketPrice <= 0.0)
-      return 0.0;
-
-   const int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   const double needMove = (targetProfit - currentProfit) / slope;
-   return NormalizeDouble(marketPrice + needMove, digits);
 }
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
@@ -305,6 +193,16 @@ bool IsTradeAllowed()
    if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
       return false;
    return true;
+}
+
+bool IsAlgoTradingEnabled()
+{
+   return (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);
+}
+
+bool IsTesterRun()
+{
+   return (MQLInfoInteger(MQL_TESTER) != 0);
 }
 
 int BrokerHour(const datetime whenTime)
@@ -375,15 +273,17 @@ void UpdateSessionPauseState(const int posCount)
    if(g_sessionPauseUntilStart && inStartWindow)
    {
       g_sessionPauseUntilStart = false;
-      Print("Session pause OFF | resumed at ", SessionTimeModeLabel(), " hour=", hourNow);
+      if(!IsTesterRun())
+         Print("Session pause OFF | resumed at ", SessionTimeModeLabel(), " hour=", hourNow);
    }
 
    // From pause hour onward, if basket is flat, pause until next start window.
    if(hourNow >= InpPauseHourBroker && posCount <= 0 && !g_sessionPauseUntilStart)
    {
       g_sessionPauseUntilStart = true;
-      Print("Session pause ON | reason=flat_between_pause_window | ",
-            SessionTimeModeLabel(), " hour=", hourNow);
+      if(!IsTesterRun())
+         Print("Session pause ON | reason=flat_between_pause_window | ",
+               SessionTimeModeLabel(), " hour=", hourNow);
    }
 }
 
@@ -406,6 +306,34 @@ bool IsGridEntryAllowedNow(const int posCount)
 
    // Existing basket can keep being managed even outside first-entry session.
    return (posCount > 0);
+}
+
+bool HasAnyFirstEntrySignalFilter()
+{
+   return (InpUseFirstEntryRsiFilter ||
+           InpUseFirstEntryMaFilter ||
+           InpUseFirstEntryBullishCandle);
+}
+
+bool IsNewBarForFirstEntry()
+{
+   // If signal filters are enabled, do not additionally restrict by
+   // "next candle open" gate.
+   if(HasAnyFirstEntrySignalFilter())
+      return true;
+
+   if(!InpFirstEntryOnNextCandleOpen)
+      return true;
+
+   const datetime barTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   if(barTime <= 0)
+      return false;
+
+   if(barTime == g_lastFirstEntryBarTime)
+      return false;
+
+   g_lastFirstEntryBarTime = barTime;
+   return true;
 }
 
 double PipPoint(const string symbol)
@@ -455,6 +383,38 @@ double NormalizeVolume(double lot, const string symbol)
    if(vol < vmin) vol = vmin;
    vol = MathFloor(vol * 100.0 + 1e-8) / 100.0;
    return vol;
+}
+
+void BuildPositionSnapshot(const string symbol, const long magic, SPositionSnapshot &snapshot)
+{
+   snapshot.count = 0;
+   snapshot.totalProfit = 0.0;
+   snapshot.hasLatestPosition = false;
+   snapshot.latestPositionTime = 0;
+   snapshot.latestPrice = 0.0;
+
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
+   const int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
+
+      snapshot.count++;
+      snapshot.totalProfit += PositionGetDouble(POSITION_PROFIT);
+
+      const datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+      if(!snapshot.hasLatestPosition || t > snapshot.latestPositionTime)
+      {
+         snapshot.latestPositionTime = t;
+         snapshot.latestPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         snapshot.hasLatestPosition = true;
+      }
+   }
 }
 
 int CountBuyPositions(const string symbol, const long magic)
@@ -641,8 +601,6 @@ int CloseAllBuyPositions(const string symbol, const long magic)
       trade.SetAsyncMode(false);
 
    const int remain = CountBuyPositions(symbol, magic);
-   if(remain == 0)
-      g_lastCloseAllTime = TimeCurrent();
    return remain;
 }
 
@@ -805,9 +763,13 @@ string UrlEncode(const string src)
 
 bool SendTelegramMessage(const string text)
 {
+   if(IsTesterRun())
+      return false;
+
    if(StringLen(TG_BOT_TOKEN) == 0 || StringLen(TG_CHAT_ID) == 0)
    {
-      Print("Telegram skip | token/chat_id empty");
+      if(!IsTesterRun())
+         Print("Telegram skip | token/chat_id empty");
       return false;
    }
 
@@ -840,12 +802,16 @@ bool SendTelegramMessage(const string text)
       return false;
    }
 
-   Print("Telegram OK | pause warning sent");
+   if(!IsTesterRun())
+      Print("Telegram OK | message sent");
    return true;
 }
 
 void SendPauseWarning(const int posCount, const string reason)
 {
+   if(IsTesterRun())
+      return;
+
    const string accountName = AccountInfoString(ACCOUNT_NAME);
    const string msg =
       "EA Paused | " + reason + "\n" +
@@ -858,13 +824,21 @@ void SendPauseWarning(const int posCount, const string reason)
 
 void TrySendEaActiveMessage(const int posCount, const double floatingProfit)
 {
+   if(IsTesterRun())
+      return;
+
    if(!InpNotifyEaActive || InpEaActiveIntervalMinutes <= 0)
       return;
 
    const datetime nowTime = TimeCurrent();
    const int intervalSec = InpEaActiveIntervalMinutes * 60;
+   const int attemptCooldownSec = 60;
+   if(g_lastActiveNotifyAttemptTime > 0 &&
+      (nowTime - g_lastActiveNotifyAttemptTime) < attemptCooldownSec)
+      return;
    if(g_lastActiveNotifyTime > 0 && (nowTime - g_lastActiveNotifyTime) < intervalSec)
       return;
+   g_lastActiveNotifyAttemptTime = nowTime;
 
    const long userId = AccountInfoInteger(ACCOUNT_LOGIN);
    const string userName = AccountInfoString(ACCOUNT_NAME);
@@ -887,7 +861,10 @@ void ResetTrailState()
 void ActivateCloseLock(const string reason)
 {
    if(!g_closeLockActive)
-      Print("Close lock ON | reason=", reason);
+   {
+      if(!IsTesterRun())
+         Print("Close lock ON | reason=", reason);
+   }
 
    g_closeLockActive = true;
    g_closeLockLastRemain = -1;
@@ -897,7 +874,10 @@ void ActivateCloseLock(const string reason)
 void DeactivateCloseLock()
 {
    if(g_closeLockActive)
-      Print("Close lock OFF | all positions closed");
+   {
+      if(!IsTesterRun())
+         Print("Close lock OFF | all positions closed");
+   }
 
    g_closeLockActive = false;
    g_closeLockLastRemain = -1;
@@ -935,7 +915,6 @@ bool ProcessCloseLock(const int posCount)
    {
       if(!g_closeLockWaitTradePrinted)
       {
-         Print("Close lock wait | trade not allowed");
          g_closeLockWaitTradePrinted = true;
       }
       return true;
@@ -950,7 +929,8 @@ bool ProcessCloseLock(const int posCount)
    }
    else if(remain != g_closeLockLastRemain)
    {
-      Print("Close lock running | remain=", remain);
+      if(!IsTesterRun())
+         Print("Close lock running | remain=", remain);
       g_closeLockLastRemain = remain;
    }
 
@@ -1021,53 +1001,152 @@ double CalcClosedProfitForRange(const datetime fromTime, const datetime toTime)
    return total;
 }
 
+double CurrentEaBasketDrawdown(const double floatingProfitNow)
+{
+   return (floatingProfitNow < 0.0 ? -floatingProfitNow : 0.0);
+}
+
 bool AppendDailyStatsRow()
 {
+   if(IsTesterRun())
+      return true;
+
    if(!InpEnableDailyStats || !g_dailyStatsInitialized)
       return true;
 
-   int flags = FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI;
+   const string rowDate = DateYmdFromTime(g_dailyStartTime);
+   const string rowLine = rowDate + "," +
+                          g_symbol + "," +
+                          (string)InpMagic + "," +
+                          DoubleToString(g_dailyClosedProfit, 2) + "," +
+                          DoubleToString(g_dailyMaxDd, 2);
+   const string headerLine = "date,symbol,magic,daily_profit,max_dd";
+
+   string lines[];
+   int lineCount = 0;
+
+   int readFlags = FILE_READ | FILE_TXT | FILE_ANSI;
    if(InpUseCommonFiles)
-      flags |= FILE_COMMON;
+      readFlags |= FILE_COMMON;
 
    ResetLastError();
-   const int handle = FileOpen(g_dailyStatsFile, flags, ',');
-   if(handle == INVALID_HANDLE)
+   const int readHandle = FileOpen(g_dailyStatsFile, readFlags);
+   if(readHandle != INVALID_HANDLE)
+   {
+      while(!FileIsEnding(readHandle))
+      {
+         string line = FileReadString(readHandle);
+         StringTrimLeft(line);
+         StringTrimRight(line);
+         if(StringLen(line) == 0)
+            continue;
+
+         const int n = lineCount + 1;
+         ArrayResize(lines, n);
+         lines[lineCount] = line;
+         lineCount = n;
+      }
+      FileClose(readHandle);
+   }
+
+   bool hasHeader = false;
+   if(lineCount > 0)
+   {
+      string first = lines[0];
+      StringToLower(first);
+      hasHeader = (first == headerLine);
+   }
+
+   if(!hasHeader)
+   {
+      const int n = lineCount + 1;
+      ArrayResize(lines, n);
+      for(int i = n - 1; i > 0; i--)
+         lines[i] = lines[i - 1];
+      lines[0] = headerLine;
+      lineCount = n;
+   }
+
+   bool replaced = false;
+   for(int i = 1; i < lineCount; i++)
+   {
+      string cells[];
+      const int cellCount = StringSplit(lines[i], ',', cells);
+      if(cellCount < 2)
+         continue;
+
+      string dateCell = cells[0];
+      string symbolCell = cells[1];
+      string magicCell = "";
+      StringTrimLeft(dateCell);
+      StringTrimRight(dateCell);
+      StringTrimLeft(symbolCell);
+      StringTrimRight(symbolCell);
+      if(cellCount >= 3)
+      {
+         magicCell = cells[2];
+         StringTrimLeft(magicCell);
+         StringTrimRight(magicCell);
+      }
+
+      if(cellCount >= 5)
+      {
+         if(dateCell == rowDate && symbolCell == g_symbol && magicCell == (string)InpMagic)
+         {
+            lines[i] = rowLine;
+            replaced = true;
+            break;
+         }
+      }
+      else if(cellCount == 4)
+      {
+         // Backward compatibility for old schema (without magic column).
+         if(dateCell == rowDate && symbolCell == g_symbol)
+         {
+            lines[i] = rowLine;
+            replaced = true;
+            break;
+         }
+      }
+   }
+
+   if(!replaced)
+   {
+      const int n = lineCount + 1;
+      ArrayResize(lines, n);
+      lines[lineCount] = rowLine;
+      lineCount = n;
+   }
+
+   int writeFlags = FILE_WRITE | FILE_TXT | FILE_ANSI;
+   if(InpUseCommonFiles)
+      writeFlags |= FILE_COMMON;
+
+   ResetLastError();
+   const int writeHandle = FileOpen(g_dailyStatsFile, writeFlags);
+   if(writeHandle == INVALID_HANDLE)
    {
       Print("Daily stats file open fail | file=", g_dailyStatsFile,
             " | err=", GetLastError());
       return false;
    }
 
-   const bool needHeader = (FileSize(handle) <= 0);
-   FileSeek(handle, 0, SEEK_END);
-
-   if(needHeader)
+   for(int i = 0; i < lineCount; i++)
    {
-      FileWrite(handle, "date", "symbol", "magic",
-                "closed_profit", "end_floating", "end_total", "max_dd");
+      FileWriteString(writeHandle, lines[i]);
+      if(i < (lineCount - 1))
+         FileWriteString(writeHandle, "\r\n");
    }
-
-   const double endFloating = g_dailyLastFloatingProfit;
-   const double endTotal = g_dailyClosedProfit + endFloating;
-   FileWrite(handle,
-             DateYmdFromTime(g_dailyStartTime),
-             g_symbol,
-             (string)InpMagic,
-             DoubleToString(g_dailyClosedProfit, 2),
-             DoubleToString(endFloating, 2),
-             DoubleToString(endTotal, 2),
-             DoubleToString(g_dailyMaxDd, 2));
-   FileClose(handle);
+   FileClose(writeHandle);
 
    if(InpLogDailyStatsSummary)
    {
-      Print("Daily stats saved | date=", DateYmdFromTime(g_dailyStartTime),
-            " | closed=", DoubleToString(g_dailyClosedProfit, 2),
-            " | endFloating=", DoubleToString(endFloating, 2),
-            " | endTotal=", DoubleToString(endTotal, 2),
-            " | maxDD=", DoubleToString(g_dailyMaxDd, 2),
-            " | file=", g_dailyStatsFile);
+      if(!IsTesterRun())
+         Print("Daily stats saved | date=", DateYmdFromTime(g_dailyStartTime),
+               " | dailyProfit=", DoubleToString(g_dailyClosedProfit, 2),
+               " | maxDD=", DoubleToString(g_dailyMaxDd, 2),
+               " | mode=", (replaced ? "replace" : "append"),
+               " | file=", g_dailyStatsFile);
    }
 
    return true;
@@ -1079,15 +1158,15 @@ void StartDailyStats(const datetime nowTime, const double floatingProfitNow)
    g_dailyDateKey = DateKeyFromTime(nowTime);
    g_dailyClosedProfit = CalcClosedProfitForRange(g_dailyStartTime, nowTime);
    g_dailyLastFloatingProfit = floatingProfitNow;
-   g_dailyPeakTotalProfit = (g_dailyClosedProfit + floatingProfitNow);
-   g_dailyMaxDd = 0.0;
+   g_dailyMaxDd = CurrentEaBasketDrawdown(floatingProfitNow);
    g_dailyStatsInitialized = true;
 
    if(InpLogDailyStatsSummary)
    {
-      Print("Daily stats start | date=", DateYmdFromTime(g_dailyStartTime),
-            " | closed_so_far=", DoubleToString(g_dailyClosedProfit, 2),
-            " | floating_now=", DoubleToString(floatingProfitNow, 2));
+      if(!IsTesterRun())
+         Print("Daily stats start | date=", DateYmdFromTime(g_dailyStartTime),
+               " | closed_so_far=", DoubleToString(g_dailyClosedProfit, 2),
+               " | floating_now=", DoubleToString(floatingProfitNow, 2));
    }
 }
 
@@ -1113,17 +1192,40 @@ void UpdateDailyStats(const double floatingProfitNow)
    }
 
    g_dailyLastFloatingProfit = floatingProfitNow;
-   const double nowTotal = g_dailyClosedProfit + floatingProfitNow;
-   if(nowTotal > g_dailyPeakTotalProfit)
-      g_dailyPeakTotalProfit = nowTotal;
+   const double ddNow = CurrentEaBasketDrawdown(floatingProfitNow);
+   if(ddNow > g_dailyMaxDd)
+      g_dailyMaxDd = ddNow;
+}
 
-   const double dd = g_dailyPeakTotalProfit - nowTotal;
-   if(dd > g_dailyMaxDd)
-      g_dailyMaxDd = dd;
+void HandleDailyStatsOnAlgoToggle(const double floatingProfitNow)
+{
+   if(IsTesterRun())
+      return;
+
+   const bool algoEnabledNow = IsAlgoTradingEnabled();
+
+   // Detect ON -> OFF transition (user disables Algo Trading button).
+   if(g_lastAlgoTradingEnabled && !algoEnabledNow)
+   {
+      // Keep stats up-to-date before flush.
+      UpdateDailyStats(floatingProfitNow);
+      if(AppendDailyStatsRow())
+      {
+         Print("Daily stats flushed | reason=algo_trading_off | date=",
+               DateYmdFromTime(g_dailyStartTime),
+               " | dailyProfit=", DoubleToString(g_dailyClosedProfit, 2),
+               " | maxDD=", DoubleToString(g_dailyMaxDd, 2));
+      }
+   }
+
+   g_lastAlgoTradingEnabled = algoEnabledNow;
 }
 
 void PrintCsvLocationGuide(const string filename)
 {
+   if(IsTesterRun())
+      return;
+
    const string dataPath = TerminalInfoString(TERMINAL_DATA_PATH);
    const string commonPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH);
    const bool isTester = (MQLInfoInteger(MQL_TESTER) != 0);
@@ -1141,7 +1243,9 @@ void PrintCsvLocationGuide(const string filename)
    {
       Print("CSV path | ", dataPath, "\\MQL5\\Files\\", filename);
       if(isTester)
+      {
          Print("CSV note | tester uses active agent data folder");
+      }
    }
 }
 
@@ -1368,77 +1472,109 @@ int OnInit()
       g_maxPositions = InpMaxPositions;
 
    if(InpBasketTPDefaultMoney <= 0.0)
-      Print("Info | basket_tp=OFF");
+   {
+      if(!IsTesterRun())
+         Print("Info | basket_tp=OFF");
+   }
    if(InpUseBasketTrail)
    {
       if(InpTrailStartMoney <= 0.0)
-         Print("Warn | trail_start<=0");
+      {
+         if(!IsTesterRun())
+            Print("Warn | trail_start<=0");
+      }
       if(InpTrailDistancePercent <= 0.0)
-         Print("Warn | trail_distance_percent<=0");
+      {
+         if(!IsTesterRun())
+            Print("Warn | trail_distance_percent<=0");
+      }
    }
 
    trade.SetExpertMagicNumber(InpMagic);
    g_ready = true;
    ResetTrailState();
    DeactivateCloseLock();
-   ClearProfitGuideLines();
    g_maxPosWarnSent = false;
    g_stopTradingByFloatingSL = false;
    g_sessionPauseUntilStart = false;
+   g_lastAlgoTradingEnabled = IsAlgoTradingEnabled();
+   g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   g_lastKnownPosCount = CountBuyPositions(g_symbol, InpMagic);
 
-   if(InpUseCloseLock && InpCloseLockTimerMs > 0)
+   const bool needTimer =
+      (InpUseCloseLock ||
+       (InpNotifyEaActive && InpEaActiveIntervalMinutes > 0) ||
+       InpEnableDailyStats);
+   int timerMs = InpCloseLockTimerMs;
+   if(timerMs <= 0)
+      timerMs = 1000;
+
+   if(needTimer)
    {
-      if(!EventSetMillisecondTimer(InpCloseLockTimerMs))
-         Print("Warn | timer setup failed | ms=", InpCloseLockTimerMs);
+      if(!EventSetMillisecondTimer(timerMs))
+      {
+         if(!IsTesterRun())
+            Print("Warn | timer setup failed | ms=", timerMs);
+      }
+      else if(!IsTesterRun() && InpCloseLockTimerMs <= 0)
+      {
+         Print("Info | timer_ms adjusted to 1000 | reason=non_close_lock_timer_features");
+      }
    }
 
-   Print("EA init OK | Symbol=", g_symbol,
-         " | Levels=", g_levelCount,
-         " | Mode=", ActiveSideLabel(),
-         " | CSV=", InpTableFile,
-         " | CommonFiles=", (InpUseCommonFiles ? "true" : "false"),
-         " | FirstEntryRSI=", (InpUseFirstEntryRsiFilter ? "true" : "false"),
-         " | FirstEntryMA=", (InpUseFirstEntryMaFilter ? "true" : "false"),
-         " | MA=", (InpFirstEntryMaType == MA_SIMPLE ? "SMA" : "EMA"),
-         " | MAperiod=", (string)InpFirstEntryMaPeriod);
-
-   Print("Init risk/execution | BullishCandle=", (InpUseFirstEntryBullishCandle ? "true" : "false"),
-         " | UseCloseLock=", (InpUseCloseLock ? "true" : "false"),
-         " | PriorityClose=", (InpUsePriorityCloseOrder ? "true" : "false"),
-         " | UseAsyncClose=", (InpUseAsyncClose ? "true" : "false"),
-         " | CloseDevPips=", DoubleToString(InpCloseDeviationPips, 1),
-         " | CloseDevPoints=", (string)CloseDeviationPointsFromPips(g_symbol, InpCloseDeviationPips),
-         " | CloseAttempts=", (string)InpCloseAttemptsPerRun,
-         " | CloseLockTimerMs=", (string)InpCloseLockTimerMs,
-         " | MaxSpreadFirst=", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
-         " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1));
-
-   Print("Init session/exit | UseTimeFilter=", (InpUseTimeFilter ? "true" : "false"),
-         " | SessionMode=", SessionTimeModeLabel(),
-         " | BrokerUTCOffset=", (string)BrokerUtcOffsetHoursNow(),
-         " | StartHour=", (string)InpStartHourBroker,
-         " | PauseHour=", (string)InpPauseHourBroker,
-         " | UseLastLevelOnExceed=", (InpUseLastLevelIfExceeded ? "true" : "false"),
-         " | BasketTPDefault=", DoubleToString(InpBasketTPDefaultMoney, 2),
-         " | FloatingDDStop=", DoubleToString(InpFloatingDDStopMoney, 2),
-         " | BasketTrail=", (InpUseBasketTrail ? "true" : "false"),
-         " | TrailGridFrom=", (string)InpTrailGridFrom,
-         " | TrailStart=", DoubleToString(InpTrailStartMoney, 2),
-         " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
-         " | MaxPositions=", g_maxPositions);
-
-   Print("Init daily_stats | enabled=", (InpEnableDailyStats ? "true" : "false"),
-         " | file=", g_dailyStatsFile,
-         " | use_common=", (InpUseCommonFiles ? "true" : "false"));
-
-   if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
-      Print("Telegram setup | allow_url=https://api.telegram.org");
-
-   for(int i = 0; i < g_levelCount; i++)
+   if(!IsTesterRun())
    {
-      Print("Level ", (i + 1), " | lot=", DoubleToString(g_levels[i].lot, 2),
-            " | gridPips=", DoubleToString(g_levels[i].gridPips, 1),
-            " | tpMoney=", DoubleToString(g_levels[i].tpMoney, 2));
+      Print("EA init OK | Symbol=", g_symbol,
+            " | Levels=", g_levelCount,
+            " | Mode=", ActiveSideLabel(),
+            " | CSV=", InpTableFile,
+            " | CommonFiles=", (InpUseCommonFiles ? "true" : "false"),
+            " | FirstEntryRSI=", (InpUseFirstEntryRsiFilter ? "true" : "false"),
+            " | FirstEntryMA=", (InpUseFirstEntryMaFilter ? "true" : "false"),
+            " | MA=", (InpFirstEntryMaType == MA_SIMPLE ? "SMA" : "EMA"),
+            " | MAperiod=", (string)InpFirstEntryMaPeriod);
+
+      Print("Init risk/execution | BullishCandle=", (InpUseFirstEntryBullishCandle ? "true" : "false"),
+            " | UseCloseLock=", (InpUseCloseLock ? "true" : "false"),
+            " | PriorityClose=", (InpUsePriorityCloseOrder ? "true" : "false"),
+            " | UseAsyncClose=", (InpUseAsyncClose ? "true" : "false"),
+            " | CloseDevPips=", DoubleToString(InpCloseDeviationPips, 1),
+            " | CloseDevPoints=", (string)CloseDeviationPointsFromPips(g_symbol, InpCloseDeviationPips),
+            " | CloseAttempts=", (string)InpCloseAttemptsPerRun,
+            " | CloseLockTimerMs=", (string)InpCloseLockTimerMs,
+            " | MaxSpreadFirst=", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
+            " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1));
+
+      if(InpFirstEntryOnNextCandleOpen && HasAnyFirstEntrySignalFilter())
+         Print("Info | first_entry_on_next_candle_open=IGNORED | reason=first_entry_signal_filter_enabled");
+
+      Print("Init session/exit | UseTimeFilter=", (InpUseTimeFilter ? "true" : "false"),
+            " | SessionMode=", SessionTimeModeLabel(),
+            " | BrokerUTCOffset=", (string)BrokerUtcOffsetHoursNow(),
+            " | StartHour=", (string)InpStartHourBroker,
+            " | PauseHour=", (string)InpPauseHourBroker,
+            " | UseLastLevelOnExceed=", (InpUseLastLevelIfExceeded ? "true" : "false"),
+            " | BasketTPDefault=", DoubleToString(InpBasketTPDefaultMoney, 2),
+            " | FloatingDDStop=", DoubleToString(InpFloatingDDStopMoney, 2),
+            " | BasketTrail=", (InpUseBasketTrail ? "true" : "false"),
+            " | TrailGridFrom=", (string)InpTrailGridFrom,
+            " | TrailStart=", DoubleToString(InpTrailStartMoney, 2),
+            " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
+            " | MaxPositions=", g_maxPositions);
+
+      Print("Init daily_stats | enabled=", (InpEnableDailyStats ? "true" : "false"),
+            " | file=", g_dailyStatsFile,
+            " | use_common=", (InpUseCommonFiles ? "true" : "false"));
+
+      if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
+         Print("Telegram setup | allow_url=https://api.telegram.org");
+
+      for(int i = 0; i < g_levelCount; i++)
+      {
+         Print("Level ", (i + 1), " | lot=", DoubleToString(g_levels[i].lot, 2),
+               " | gridPips=", DoubleToString(g_levels[i].gridPips, 1),
+               " | tpMoney=", DoubleToString(g_levels[i].tpMoney, 2));
+      }
    }
 
    return INIT_SUCCEEDED;
@@ -1447,7 +1583,6 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   ClearProfitGuideLines();
    AppendDailyStatsRow();
 
    if(g_rsiHandle != INVALID_HANDLE)
@@ -1468,17 +1603,13 @@ void OnTimer()
    if(!g_ready)
       return;
 
-   const int posCount = CountBuyPositions(g_symbol, InpMagic);
+   SPositionSnapshot snapshot;
+   BuildPositionSnapshot(g_symbol, InpMagic, snapshot);
+   const int posCount = snapshot.count;
+   const double floatingProfit = snapshot.totalProfit;
+   HandleDailyStatsOnAlgoToggle(floatingProfit);
    if(InpNotifyEaActive && InpEaActiveIntervalMinutes > 0)
-   {
-      const datetime nowTime = TimeCurrent();
-      const int intervalSec = InpEaActiveIntervalMinutes * 60;
-      if(g_lastActiveNotifyTime <= 0 || (nowTime - g_lastActiveNotifyTime) >= intervalSec)
-      {
-         const double floatingProfit = (posCount > 0 ? TotalProfit(g_symbol, InpMagic) : 0.0);
-         TrySendEaActiveMessage(posCount, floatingProfit);
-      }
-   }
+      TrySendEaActiveMessage(posCount, floatingProfit);
    ProcessCloseLock(posCount);
 }
 
@@ -1526,52 +1657,53 @@ void OnTick()
    if(_Symbol != g_symbol)
       return;
 
-   const int posCount = CountBuyPositions(g_symbol, InpMagic);
-   const double floatingProfitNow = (posCount > 0 ? TotalProfit(g_symbol, InpMagic) : 0.0);
-   TrySendEaActiveMessage(posCount, floatingProfitNow);
+   SPositionSnapshot snapshot;
+   BuildPositionSnapshot(g_symbol, InpMagic, snapshot);
+   const int posCount = snapshot.count;
+   const double floatingProfitNow = snapshot.totalProfit;
+
+   // Detect transition from active basket to flat.
+   // Reset first-entry bar baseline so "next candle open" truly means
+   // the candle after basket close, not after last first-entry check.
+   if(posCount <= 0 && g_lastKnownPosCount > 0)
+      g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   g_lastKnownPosCount = posCount;
+
    UpdateDailyStats(floatingProfitNow);
 
    if(posCount <= 0)
    {
-      // In async close mode, the last close can complete after close requests are sent.
-      // Record close-all time here so cooldown still applies before any new entry.
-      if(g_closeLockActive)
-         g_lastCloseAllTime = TimeCurrent();
-
       ResetTrailState();
       DeactivateCloseLock();
-      ClearProfitGuideLines();
       g_maxPosWarnSent = false;
    }
 
-   if(ProcessCloseLock(posCount))
+   if(InpUseCloseLock && g_closeLockActive)
+   {
+      // Safety fallback: when timer is disabled/unavailable, keep processing lock on ticks.
+      ProcessCloseLock(posCount);
       return;
+   }
 
    UpdateSessionPauseState(posCount);
 
    if(g_stopTradingByFloatingSL)
    {
-      ClearProfitGuideLines();
       if(posCount > 0)
       {
          if(InpUseCloseLock)
          {
             ActivateCloseLock("floating_dd_stop");
-            ProcessCloseLock(posCount);
+            return;
          }
          else
          {
             if(!IsTradeAllowed())
-            {
-               Print("Floating DD stop wait | trade not allowed");
                return;
-            }
 
             const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
-            else
-               Print("Floating DD stop close partial | remain=", remain);
          }
       }
       return;
@@ -1595,28 +1727,22 @@ void OnTick()
             "Limit: -" + DoubleToString(InpFloatingDDStopMoney, 2) + "\n" +
             "Action: close all + stop trading (manual restart from MT5)";
 
-         Print(msg);
          if(InpNotifyFloatingSLStop)
             SendTelegramMessage(msg);
 
          if(InpUseCloseLock)
          {
             ActivateCloseLock("floating_dd_stop");
-            ProcessCloseLock(posCount);
+            return;
          }
          else
          {
             if(!IsTradeAllowed())
-            {
-               Print("Floating DD stop wait | trade not allowed");
                return;
-            }
 
             const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
-            else
-               Print("Floating DD stop close partial | remain=", remain);
          }
          return;
       }
@@ -1639,70 +1765,39 @@ void OnTick()
           posCount >= InpTrailGridFrom &&
           InpTrailDistancePercent > 0.0);
 
-      // Profit guide lines on chart (price projection from basket money targets).
-      // TP line behavior:
-      // - Trailing not active yet (but eligible): show trailing activation target.
-      // - Trailing active: show peak-profit reference (highest TP anchor for trailing).
-      // - Non-trailing mode: show fixed TP target.
-      double tpGuidePrice = 0.0;
-      if(useTrailForThisGrid)
-      {
-         if(!g_trailActive && trailStartMoney > 0.0)
-            tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, trailStartMoney, profit);
-         else if(g_trailActive && g_trailPeakProfit > 0.0)
-            tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, g_trailPeakProfit, profit);
-      }
-      else if(forcedTpMoney > 0.0)
-         tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, forcedTpMoney, profit);
-      else if(currentLevelTpMoney > 0.0)
-         tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, currentLevelTpMoney, profit);
-      else if(InpBasketTPDefaultMoney > 0.0)
-         tpGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, InpBasketTPDefaultMoney, profit);
-
-      double trailStopGuidePrice = 0.0;
-      if(useTrailForThisGrid && g_trailActive)
-      {
-         const double trailStopProfitGuide = g_trailPeakProfit * (1.0 - (InpTrailDistancePercent / 100.0));
-         trailStopGuidePrice = BasketBidForTargetProfit(g_symbol, InpMagic, trailStopProfitGuide, profit);
-      }
-
-      UpsertGuideLine(GuideLineName("TP"), tpGuidePrice, clrAqua, STYLE_DOT);
-      UpsertGuideLine(GuideLineName("TRAIL_STOP"), trailStopGuidePrice, clrOrange, STYLE_DOT);
-
       if(forceTrailOff && g_trailActive)
       {
-         Print("Basket trail OFF | reason=grid<=3");
+         if(!IsTesterRun())
+            Print("Basket trail OFF | reason=grid_below_trail_from | trail_grid_from=",
+                  (string)InpTrailGridFrom);
          ResetTrailState();
       }
       else if(!forceTrailOff && g_trailActive && !useTrailForThisGrid)
       {
-         Print("Basket trail OFF | reason=grid_below_trail_from");
+         if(!IsTesterRun())
+            Print("Basket trail OFF | reason=grid_below_trail_from");
          ResetTrailState();
       }
 
       if(forcedTpMoney > 0.0 && profit >= forcedTpMoney)
       {
-         Print("Forced TP hit | grid=", posCount,
-               " | profit=", DoubleToString(profit, 2),
-               " | target=", DoubleToString(forcedTpMoney, 2));
+         if(!IsTesterRun())
+            Print("Forced TP hit | grid=", posCount,
+                  " | profit=", DoubleToString(profit, 2),
+                  " | target=", DoubleToString(forcedTpMoney, 2));
          if(InpUseCloseLock)
          {
             ActivateCloseLock("forced_tp");
-            ProcessCloseLock(posCount);
+            return;
          }
          else
          {
             if(!IsTradeAllowed())
-            {
-               Print("Forced TP wait | trade not allowed");
                return;
-            }
 
             const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
-            else
-               Print("Forced TP close partial | remain=", remain);
          }
          return;
       }
@@ -1710,27 +1805,23 @@ void OnTick()
       if(!useTrailForThisGrid &&
          currentLevelTpMoney > 0.0 && profit >= currentLevelTpMoney)
       {
-         Print("Level TP hit | grid=", posCount,
-               " | profit=", DoubleToString(profit, 2),
-               " | target=", DoubleToString(currentLevelTpMoney, 2));
+         if(!IsTesterRun())
+            Print("Level TP hit | grid=", posCount,
+                  " | profit=", DoubleToString(profit, 2),
+                  " | target=", DoubleToString(currentLevelTpMoney, 2));
          if(InpUseCloseLock)
          {
             ActivateCloseLock("level_tp");
-            ProcessCloseLock(posCount);
+            return;
          }
          else
          {
             if(!IsTradeAllowed())
-            {
-               Print("Level TP wait | trade not allowed");
                return;
-            }
 
             const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
-            else
-               Print("Level TP close partial | remain=", remain);
          }
          return;
       }
@@ -1739,26 +1830,22 @@ void OnTick()
       if(!forceTrailOff && !useTrailForThisGrid &&
          InpBasketTPDefaultMoney > 0.0 && profit >= InpBasketTPDefaultMoney)
       {
-         Print("Basket TP hit | profit=", DoubleToString(profit, 2),
-               " | target=", DoubleToString(InpBasketTPDefaultMoney, 2));
+         if(!IsTesterRun())
+            Print("Basket TP hit | profit=", DoubleToString(profit, 2),
+                  " | target=", DoubleToString(InpBasketTPDefaultMoney, 2));
          if(InpUseCloseLock)
          {
             ActivateCloseLock("basket_tp");
-            ProcessCloseLock(posCount);
+            return;
          }
          else
          {
             if(!IsTradeAllowed())
-            {
-               Print("Basket TP wait | trade not allowed");
                return;
-            }
 
             const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
-            else
-               Print("Basket TP close partial | remain=", remain);
          }
          return;
       }
@@ -1770,7 +1857,8 @@ void OnTick()
          {
             g_trailActive = true;
             g_trailPeakProfit = profit;
-            Print("Basket trail ON | start_profit=", DoubleToString(profit, 2));
+            if(!IsTesterRun())
+               Print("Basket trail ON | start_profit=", DoubleToString(profit, 2));
          }
 
          if(g_trailActive)
@@ -1781,27 +1869,23 @@ void OnTick()
             const double trailStopProfit = g_trailPeakProfit * (1.0 - (InpTrailDistancePercent / 100.0));
             if(profit <= trailStopProfit)
             {
-               Print("Basket trail hit | profit=", DoubleToString(profit, 2),
-                     " | peak=", DoubleToString(g_trailPeakProfit, 2),
-                     " | stop=", DoubleToString(trailStopProfit, 2));
+               if(!IsTesterRun())
+                  Print("Basket trail hit | profit=", DoubleToString(profit, 2),
+                        " | peak=", DoubleToString(g_trailPeakProfit, 2),
+                        " | stop=", DoubleToString(trailStopProfit, 2));
                if(InpUseCloseLock)
                {
                   ActivateCloseLock("basket_trail");
-                  ProcessCloseLock(posCount);
+                  return;
                }
                else
                {
                   if(!IsTradeAllowed())
-                  {
-                     Print("Basket trail wait | trade not allowed");
                      return;
-                  }
 
                   const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
                   if(remain == 0)
                      ResetTrailState();
-                  else
-                     Print("Basket trail close partial | remain=", remain);
                }
                return;
             }
@@ -1822,11 +1906,6 @@ void OnTick()
    if(!IsTradeAllowed())
       return;
 
-   if(InpCooldownAfterCloseSeconds > 0 &&
-      g_lastCloseAllTime > 0 &&
-      (TimeCurrent() - g_lastCloseAllTime) < InpCooldownAfterCloseSeconds)
-      return;
-
    if(InpMinSecondsBetweenOrders > 0 && (TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
       return;
 
@@ -1839,6 +1918,9 @@ void OnTick()
 
    if(posCount == 0)
    {
+      if(!IsNewBarForFirstEntry())
+         return;
+
       if(!IsFirstEntryAllowedNow())
          return;
 
@@ -1852,16 +1934,17 @@ void OnTick()
       if(!FirstEntryBullishCandleOK())
          return;
 
-      Print("Open first entry | level=", (levelIndex + 1),
-            " | side=", ActiveSideLabel(),
-            " | lot=", DoubleToString(lot, 2));
+      if(!IsTesterRun())
+         Print("Open first entry | level=", (levelIndex + 1),
+               " | side=", ActiveSideLabel(),
+               " | lot=", DoubleToString(lot, 2));
       OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
       return;
    }
 
-   double latest_price;
-   if(!GetLatestBuyPosition(g_symbol, InpMagic, latest_price))
+   if(!snapshot.hasLatestPosition)
       return;
+   const double latest_price = snapshot.latestPrice;
 
    const double gridPrice = gridPips * PipPoint(g_symbol);
    const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
@@ -1877,11 +1960,13 @@ void OnTick()
       if(!SpreadOK(g_symbol, InpMaxSpreadGridEntryPips))
          return;
 
-      Print("Open grid entry | level=", (levelIndex + 1),
-            " | side=", ActiveSideLabel(),
-            " | lot=", DoubleToString(lot, 2),
-            " | gridPips=", DoubleToString(gridPips, 1),
-            " | tpMoney=", DoubleToString(tpMoney, 2));
+      if(!IsTesterRun())
+         Print("Open grid entry | level=", (levelIndex + 1),
+               " | side=", ActiveSideLabel(),
+               " | lot=", DoubleToString(lot, 2),
+               " | gridPips=", DoubleToString(gridPips, 1),
+               " | tpMoney=", DoubleToString(tpMoney, 2));
       OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
    }
 }
+

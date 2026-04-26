@@ -10,11 +10,12 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 
 # Hardcode file input di sini.
 # Ubah sesuai kebutuhan: tambah/hapus nama file.
-INPUT_DIR = Path("/Drive/D/mt5/BackTest_TableGrid_2020")
-INPUT_FILES = [str(INPUT_DIR / f"{n}.csv") for n in range(10, 1001, 10)]
+# INPUT_DIR = Path("/Drive/D/mt5/BackTest_TableGrid_2020")
+INPUT_DIR = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\Buy_Only")
+INPUT_FILES = [str(INPUT_DIR / f"{n}.csv") for n in range(300, 301, 10)]
 
 # Hardcode max DD di sini.
-MAX_DD = 10000
+MAX_DD = 5000
 
 # Hardcode output file di sini.
 DATES_OUTPUT_FILE = str(INPUT_DIR / "filtered_unique_dates.csv")
@@ -139,6 +140,7 @@ def main() -> int:
 
     total_rows = 0
     filtered_dates = set()
+    date_to_max_dd = {}
 
     for path in files:
         for date_str, time_str, balance, equity, dep_load in read_rows(path):
@@ -146,13 +148,16 @@ def main() -> int:
             total_rows += 1
             if dd >= MAX_DD:
                 filtered_dates.add(date_str)
+                prev_max = date_to_max_dd.get(date_str)
+                if prev_max is None or dd > prev_max:
+                    date_to_max_dd[date_str] = dd
 
     sorted_dates = sorted(filtered_dates, key=sort_date_key)
     with open(dates_output_path, "w", newline="", encoding="utf-16") as f:
         writer = csv.writer(f)
-        writer.writerow(["date"])
+        writer.writerow(["date", "max_dd"])
         for d in sorted_dates:
-            writer.writerow([d])
+            writer.writerow([d, f"{date_to_max_dd[d]:.2f}"])
 
     print(f"File dibaca      : {len(files)}")
     print(f"Total baris valid: {total_rows}")

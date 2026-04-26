@@ -930,6 +930,14 @@ double CalcClosedProfitForRange(const datetime fromTime, const datetime toTime)
    return total;
 }
 
+double CurrentAccountDrawdown()
+{
+   const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   const double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   const double dd = (balance - equity);
+   return (dd > 0.0 ? dd : 0.0);
+}
+
 bool AppendDailyStatsRow()
 {
    if(!InpEnableDailyStats || !g_dailyStatsInitialized)
@@ -953,28 +961,20 @@ bool AppendDailyStatsRow()
 
    if(needHeader)
    {
-      FileWrite(handle, "date", "symbol", "magic",
-                "closed_profit", "end_floating", "end_total", "max_dd");
+      FileWrite(handle, "date", "symbol", "daily_profit", "max_dd");
    }
 
-   const double endFloating = g_dailyLastFloatingProfit;
-   const double endTotal = g_dailyClosedProfit + endFloating;
    FileWrite(handle,
              DateYmdFromTime(g_dailyStartTime),
              g_symbol,
-             (string)InpMagic,
              DoubleToString(g_dailyClosedProfit, 2),
-             DoubleToString(endFloating, 2),
-             DoubleToString(endTotal, 2),
              DoubleToString(g_dailyMaxDd, 2));
    FileClose(handle);
 
    if(InpLogDailyStatsSummary)
    {
       Print("Daily stats saved | date=", DateYmdFromTime(g_dailyStartTime),
-            " | closed=", DoubleToString(g_dailyClosedProfit, 2),
-            " | endFloating=", DoubleToString(endFloating, 2),
-            " | endTotal=", DoubleToString(endTotal, 2),
+            " | dailyProfit=", DoubleToString(g_dailyClosedProfit, 2),
             " | maxDD=", DoubleToString(g_dailyMaxDd, 2),
             " | file=", InpDailyStatsFile);
    }
@@ -988,8 +988,8 @@ void StartDailyStats(const datetime nowTime, const double floatingProfitNow)
    g_dailyDateKey = DateKeyFromTime(nowTime);
    g_dailyClosedProfit = CalcClosedProfitForRange(g_dailyStartTime, nowTime);
    g_dailyLastFloatingProfit = floatingProfitNow;
-   g_dailyPeakTotalProfit = (g_dailyClosedProfit + floatingProfitNow);
-   g_dailyMaxDd = 0.0;
+   g_dailyPeakTotalProfit = 0.0;
+   g_dailyMaxDd = CurrentAccountDrawdown();
    g_dailyStatsInitialized = true;
 
    if(InpLogDailyStatsSummary)
@@ -1022,13 +1022,9 @@ void UpdateDailyStats(const double floatingProfitNow)
    }
 
    g_dailyLastFloatingProfit = floatingProfitNow;
-   const double nowTotal = g_dailyClosedProfit + floatingProfitNow;
-   if(nowTotal > g_dailyPeakTotalProfit)
-      g_dailyPeakTotalProfit = nowTotal;
-
-   const double dd = g_dailyPeakTotalProfit - nowTotal;
-   if(dd > g_dailyMaxDd)
-      g_dailyMaxDd = dd;
+   const double ddNow = CurrentAccountDrawdown();
+   if(ddNow > g_dailyMaxDd)
+      g_dailyMaxDd = ddNow;
 }
 
 void PrintCsvLocationGuide(const string filename)
