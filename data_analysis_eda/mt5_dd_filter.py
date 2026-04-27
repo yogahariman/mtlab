@@ -10,16 +10,18 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 
 # Hardcode file input di sini.
 # Ubah sesuai kebutuhan: tambah/hapus nama file.
-# INPUT_DIR = Path("/Drive/D/mt5/BackTest_TableGrid_2020")
-INPUT_DIR = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\Buy_Only")
-INPUT_FILES = [str(INPUT_DIR / f"{n}.csv") for n in range(300, 301, 10)]
+INPUT_FILES = [
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_100.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_150.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_200.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_250.csv"),
+    Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_300.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_350.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_400.csv"),
+]
 
 # Hardcode max DD di sini.
-MAX_DD = 5000
-
-# Hardcode output file di sini.
-DATES_OUTPUT_FILE = str(INPUT_DIR / "filtered_unique_dates.csv")
-
+MAX_DD = 10_000
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -125,7 +127,6 @@ def read_rows(path: Path):
 
 def main() -> int:
     parse_args()
-    dates_output_path = Path(DATES_OUTPUT_FILE).expanduser().resolve()
     files, missing_files = get_hardcoded_input_paths()
 
     if missing_files:
@@ -153,17 +154,18 @@ def main() -> int:
                     date_to_max_dd[date_str] = dd
 
     sorted_dates = sorted(filtered_dates, key=sort_date_key)
-    with open(dates_output_path, "w", newline="", encoding="utf-16") as f:
-        writer = csv.writer(f)
-        writer.writerow(["date", "max_dd"])
-        for d in sorted_dates:
-            writer.writerow([d, f"{date_to_max_dd[d]:.2f}"])
 
     print(f"File dibaca      : {len(files)}")
     print(f"Total baris valid: {total_rows}")
     print(f"Tanggal unik DD>={MAX_DD}: {len(sorted_dates)}")
-    print(f"Dates output (input)  : {DATES_OUTPUT_FILE}")
-    print(f"Dates output (abs)    : {dates_output_path}")
+
+    if sorted_dates:
+        print("\n=== Daftar tanggal terfilter (date, max_dd) ===")
+        for d in sorted_dates:
+            print(f"{d}, {date_to_max_dd[d]:.2f}")
+    else:
+        print("\nTidak ada tanggal yang memenuhi filter DD.")
+
     return 0
 
 
