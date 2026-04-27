@@ -72,7 +72,7 @@ input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev 
 
 input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input double InpTrailStartMoney         = 18.0;   // Trailing activation money: enabled when table TP (3rd column) >= value
+input double InpTrailStartMoney         = 18.0;   // Mode switch: table TP <= value => fixed TP, table TP > value => start trailing after profit reaches table TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 
@@ -1538,9 +1538,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
 {
-   (void)request;
-   (void)result;
-
    if(!g_ready || !InpEnableDailyStats)
       return;
 
@@ -1674,14 +1671,17 @@ void OnTick()
       if(!GetCurrentGridTpMoney(posCount, currentLevelTpMoney))
          return;
 
-      const bool trailEligibleByTableTp =
-         (InpTrailStartMoney > 0.0 &&
-          currentLevelTpMoney >= InpTrailStartMoney);
-      const bool useTrailForThisGrid =
+      const bool trailConfigOk =
          (InpUseBasketTrail &&
-          trailEligibleByTableTp &&
+          InpTrailStartMoney > 0.0 &&
           InpTrailDistancePercent > 0.0 &&
           InpTrailDistancePercent < 100.0);
+      // Mode selection per your requested flow:
+      // - table TP <= trail start -> fixed TP
+      // - table TP > trail start  -> table TP becomes trailing activation level
+      const bool useTrailForThisGrid =
+         (trailConfigOk &&
+          currentLevelTpMoney > InpTrailStartMoney);
 
       if(g_trailActive && !useTrailForThisGrid)
       {
@@ -1724,17 +1724,18 @@ void OnTick()
          return;
       }
 
-      // Trailing is enabled only when table TP (3rd column) >= trail start money.
+      // For trail-mode grids, start trailing only after profit reaches table TP.
       if(useTrailForThisGrid)
       {
-         if(!g_trailActive)
+         if(!g_trailActive && profit >= currentLevelTpMoney)
          {
             g_trailActive = true;
             g_trailPeakProfit = profit;
             if(!IsTesterRun())
                Print("Basket trail ON | profit=", DoubleToString(profit, 2),
                      " | table_tp=", DoubleToString(currentLevelTpMoney, 2),
-                     " | trail_start=", DoubleToString(InpTrailStartMoney, 2));
+                     " | trail_start=", DoubleToString(InpTrailStartMoney, 2),
+                     " | mode=activated_after_table_tp_hit");
          }
 
          if(g_trailActive)
