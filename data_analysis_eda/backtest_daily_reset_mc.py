@@ -13,18 +13,20 @@ import pandas as pd
 # =========================
 # Ubah daftar file sesuai lokasi data Anda.
 INPUT_FILES = [
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_320.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t2_400.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t3_340.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t4_290.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t5_260.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t6_240.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t7_220.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t8_210.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t9_200.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t10_190.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t11_70.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t12_140.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_320.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t2_400.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t3_340.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t4_290.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t5_260.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t6_240.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t7_220.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t8_210.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t9_200.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t10_190.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t11_70.csv"),
+    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t12_140.csv"),
+    Path(r"/Drive/E/t1_320.csv"),
+    Path(r"/Drive/E/t1_320_a.csv"),
 ]
 
 INITIAL_CAPITAL = 10_000.0

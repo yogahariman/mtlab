@@ -53,7 +53,7 @@ input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
 
 input group "Trading Session"
-input bool   InpUseTimeFilter           = true;   // Enable trading session filter
+input bool   InpUseTimeFilter           = false;   // Enable trading session filter
 input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_UTC; // Session input timezone: broker/UTC/WIB(UTC+7)
 input int    InpStartHourBroker         = 1;      // Start first entries from this hour in selected session timezone (00-23)
 input int    InpPauseHourBroker         = 18;     // Pause-prep starts from this hour in selected session timezone (00-23)
@@ -778,7 +778,7 @@ void SendPauseWarning(const int posCount, const string reason)
    Print(msg);
 }
 
-void TrySendEaActiveMessage(const double floatingProfit)
+void TrySendEaActiveMessage(const int posCount, const double floatingProfit)
 {
    if(IsTesterRun())
       return;
@@ -799,7 +799,9 @@ void TrySendEaActiveMessage(const double floatingProfit)
    const string userName = AccountInfoString(ACCOUNT_NAME);
    const string sign = (floatingProfit >= 0.0 ? "+" : "");
    const string msg =
-      "🟢 " + userName + " · " + sign + DoubleToString(floatingProfit, 2);
+      "🟢 " + userName +
+      " | Grid: " + (string)posCount +
+      " | Floating: " + sign + DoubleToString(floatingProfit, 2);
 
    if(SendTelegramMessage(msg))
       g_lastActiveNotifyTime = nowTime;
@@ -1537,7 +1539,7 @@ void OnTimer()
    const double floatingProfit = snapshot.totalProfit;
    HandleDailyStatsOnAlgoToggle(floatingProfit);
    if(InpNotifyEaActive && InpEaActiveIntervalMinutes > 0)
-      TrySendEaActiveMessage(floatingProfit);
+      TrySendEaActiveMessage(posCount, floatingProfit);
    ProcessCloseLock(posCount);
 }
 
