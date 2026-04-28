@@ -54,9 +54,9 @@ input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry 
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = true;   // Enable trading session filter
-input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_BROKER; // Session input timezone: broker/UTC/WIB(UTC+7)
-input int    InpStartHourBroker         = 2;      // Start first entries from this hour in selected session timezone (00-23)
-input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
+input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_UTC; // Session input timezone: broker/UTC/WIB(UTC+7)
+input int    InpStartHourBroker         = 1;      // Start first entries from this hour in selected session timezone (00-23)
+input int    InpPauseHourBroker         = 18;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
 input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
@@ -690,10 +690,15 @@ bool FirstEntryBullishCandleOK()
 string UrlEncode(const string src)
 {
    string out = "";
-   const int n = StringLen(src);
-   for(int i = 0; i < n; i++)
+   char bytes[];
+   const int copied = StringToCharArray(src, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   if(copied <= 1)
+      return out;
+
+   // copied includes null-terminator, encode only data bytes.
+   for(int i = 0; i < copied - 1; i++)
    {
-      const ushort c = (ushort)StringGetCharacter(src, i);
+      const int c = ((int)bytes[i]) & 0xFF;
       const bool safe = ((c >= 'a' && c <= 'z') ||
                          (c >= 'A' && c <= 'Z') ||
                          (c >= '0' && c <= '9') ||
@@ -738,6 +743,7 @@ bool SendTelegramMessage(const string text)
 
    ResetLastError();
    const int code = WebRequest("POST", url, headers, 5000, data, result, result_headers);
+   const string responseBody = CharArrayToString(result, 0, -1, CP_UTF8);
    if(code == -1)
    {
       Print("Telegram fail | err=", GetLastError(),
@@ -747,7 +753,8 @@ bool SendTelegramMessage(const string text)
 
    if(code < 200 || code >= 300)
    {
-      Print("Telegram fail | http_code=", code);
+      Print("Telegram fail | http_code=", code,
+            " | response=", responseBody);
       return false;
    }
 
