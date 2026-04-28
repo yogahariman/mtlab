@@ -36,7 +36,7 @@ input long   InpMagic                   = 260414; // Magic number
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_320.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
+input string InpTableFile               = "T1.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -79,7 +79,7 @@ input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when
 input group "Telegram Alerts"
 input bool   InpNotifyFloatingSLStop    = true;    // Send Telegram alert when floating SL stop is triggered
 input bool   InpNotifyEaActive          = true;    // Send periodic Telegram message that EA is active
-input int    InpEaActiveIntervalMinutes = 60;      // Periodic active message interval in minutes
+input int    InpEaActiveIntervalMinutes = 30;      // Periodic active message interval in minutes
 
 input group "Daily Stats"
 input bool   InpEnableDailyStats        = true;    // Track and save daily profit + max DD for this EA (symbol+magic)
