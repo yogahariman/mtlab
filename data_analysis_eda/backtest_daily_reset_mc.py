@@ -25,8 +25,14 @@ INPUT_FILES = [
     # Path(r"/Drive/D/mt5/BackTest_T1_2020/t10_190.csv"),
     # Path(r"/Drive/D/mt5/BackTest_T1_2020/t11_70.csv"),
     # Path(r"/Drive/D/mt5/BackTest_T1_2020/t12_140.csv"),
-    Path(r"/Drive/E/t1_320.csv"),
-    Path(r"/Drive/E/t1_320_a.csv"),
+    Path(r"/Drive/E/mt5/t1.csv"),
+    Path(r"/Drive/E/mt5/t2.csv"),
+    Path(r"/Drive/E/mt5/403.csv"),
+    Path(r"/Drive/E/mt5/profitdrive_1.csv"),
+    Path(r"/Drive/E/mt5/profitdrive_2.csv"),
+    Path(r"/Drive/E/mt5/profitdrive_3.csv"),
+    Path(r"/Drive/E/mt5/profitdrive_4.csv"),
+    Path(r"/Drive/E/mt5/profitdrive_5.csv"),
 ]
 
 INITIAL_CAPITAL = 10_000.0

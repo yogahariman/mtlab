@@ -59,7 +59,7 @@ input int    InpStartHourBroker         = 1;      // Start first entries from th
 input int    InpPauseHourBroker         = 18;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
-input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
+input bool   InpFirstEntryOnNextCandleOpen = false; // First entry only on next candle open (first tick of new bar)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA

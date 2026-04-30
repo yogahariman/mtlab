@@ -11,13 +11,8 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 # Hardcode file input di sini.
 # Ubah sesuai kebutuhan: tambah/hapus nama file.
 INPUT_FILES = [
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_100.csv"),
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_150.csv"),
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_200.csv"),
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_250.csv"),
-    Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_300.csv"),
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_350.csv"),
-    # Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_400.csv"),
+    Path(r"/Drive/E/mt5/t1.csv"),
+    Path(r"/Drive/E/mt5/t2.csv"),
 ]
 
 # Hardcode max DD di sini.
