@@ -1,6 +1,7 @@
 //+------------------------------------------------------------------+
 //| XAU_BiGrid_Basket.mq5                                            |
 //| BuyStop grid above + SellStop grid below + basket close all      |
+//| Optional reverse grid: SellLimit above + BuyLimit below          |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
@@ -24,9 +25,10 @@ input group "Grid"
 input double InpGridDistancePips        = 250.0;
 input int    InpGridLevelsPerSide       = 8;
 input int    InpMinSecondsBetweenRearm  = 30;
+input bool   InpReverseGrid             = true; // false=BuyStop above/SellStop below, true=SellLimit above/BuyLimit below
 
 input group "Basket Exit"
-input double InpBasketTPMoney           = 8.0;
+input double InpBasketTPMoney           = 20.0;
 input double InpBasketStopLossMoney     = 0.0; // Basket Stop Loss (Account Currency, 0=Off)
 input double InpEquityStopPercent       = 0.0;  // Equity Drawdown Stop (% of Balance, 0=Off)
 
@@ -35,6 +37,7 @@ input bool   InpUseTimeFilter           = true;   // Enable trading session filt
 input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_BROKER; // Session input timezone: broker/UTC/WIB(UTC+7)
 input int    InpStartHourBroker         = 2;      // Start first entries from this hour in selected session timezone (00-23)
 input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
+input int    InpMondayOpenDelayMinutes  = 30;     // Delay first grid on Monday after start hour (0=Off)
 
 input group "Trend Filter"
 input bool   InpUseTrendFilter          = false;  // Enable MA trend filter for new grid placement
@@ -52,6 +55,8 @@ datetime g_lastRearmTime = 0;
 bool g_closeLockActive = false;
 bool g_sessionPauseUntilStart = false;
 int  g_trendMaHandle = INVALID_HANDLE;
+datetime g_lastSpreadSkipLogTime = 0;
+datetime g_lastMondayDelayLogTime = 0;
 
 int NormalizeHour(const int hour)
 {
@@ -79,6 +84,21 @@ int BrokerUtcOffsetHoursNow()
 }
 
 
+void SessionReferenceTimeStruct(const datetime whenTime, MqlDateTime &dt)
+{
+   datetime refTime = whenTime;
+   if(InpSessionTimeMode != SESSION_TIME_BROKER)
+   {
+      const int brokerUtcOffset = BrokerUtcOffsetHoursNow();
+      refTime = whenTime - (brokerUtcOffset * 3600);
+      if(InpSessionTimeMode == SESSION_TIME_WIB)
+         refTime += 7 * 3600;
+   }
+
+   TimeToStruct(refTime, dt);
+}
+
+
 string SessionTimeModeLabel()
 {
    if(InpSessionTimeMode == SESSION_TIME_UTC)
@@ -91,17 +111,9 @@ string SessionTimeModeLabel()
 
 int SessionReferenceHour(const datetime whenTime)
 {
-   const int brokerHour = BrokerHour(whenTime);
-   if(InpSessionTimeMode == SESSION_TIME_BROKER)
-      return brokerHour;
-
-   const int brokerUtcOffset = BrokerUtcOffsetHoursNow();
-   const int utcHour = NormalizeHour(brokerHour - brokerUtcOffset);
-   if(InpSessionTimeMode == SESSION_TIME_UTC)
-      return utcHour;
-
-   // WIB is UTC+7.
-   return NormalizeHour(utcHour + 7);
+   MqlDateTime dt;
+   SessionReferenceTimeStruct(whenTime, dt);
+   return dt.hour;
 }
 
 
@@ -109,6 +121,36 @@ bool IsWithinTradingWindow(const datetime whenTime)
 {
    const int h = SessionReferenceHour(whenTime);
    return (h >= InpStartHourBroker && h < InpPauseHourBroker);
+}
+
+
+bool IsMondayOpenDelayActive()
+{
+   if(!InpUseTimeFilter || InpMondayOpenDelayMinutes <= 0)
+      return false;
+
+   MqlDateTime dt;
+   SessionReferenceTimeStruct(TimeCurrent(), dt);
+   if(dt.day_of_week != 1)
+      return false;
+
+   const int startMinutes = InpStartHourBroker * 60;
+   const int nowMinutes = (dt.hour * 60) + dt.min;
+   if(nowMinutes < startMinutes || nowMinutes >= startMinutes + InpMondayOpenDelayMinutes)
+      return false;
+
+   if((TimeCurrent() - g_lastMondayDelayLogTime) >= 300)
+   {
+      g_lastMondayDelayLogTime = TimeCurrent();
+      Print("Monday open delay active | ", SessionTimeModeLabel(),
+            " time=", StringFormat("%02d:%02d", dt.hour, dt.min),
+            " | wait until ",
+            StringFormat("%02d:%02d",
+                         NormalizeHour((startMinutes + InpMondayOpenDelayMinutes) / 60),
+                         (startMinutes + InpMondayOpenDelayMinutes) % 60));
+   }
+
+   return true;
 }
 
 
@@ -145,6 +187,9 @@ bool IsNewGridAllowedNow(const int posCount)
       return true;
 
    if(g_sessionPauseUntilStart)
+      return false;
+
+   if(posCount <= 0 && IsMondayOpenDelayActive())
       return false;
 
    return (IsWithinTradingWindow(TimeCurrent()) || posCount > 0);
@@ -223,7 +268,19 @@ bool IsSpreadOk()
    if(pipPoint <= 0.0 || bid <= 0.0 || ask <= 0.0)
       return false;
 
-   return ((ask - bid) / pipPoint <= InpMaxSpreadPips);
+   const double spreadPips = (ask - bid) / pipPoint;
+   if(spreadPips <= InpMaxSpreadPips)
+      return true;
+
+   if((TimeCurrent() - g_lastSpreadSkipLogTime) >= 300)
+   {
+      g_lastSpreadSkipLogTime = TimeCurrent();
+      Print("Skip grid | spread too high: ",
+            DoubleToString(spreadPips, 1), " pips > max ",
+            DoubleToString(InpMaxSpreadPips, 1), " pips");
+   }
+
+   return false;
 }
 
 
@@ -255,7 +312,8 @@ int CountMyPendingOrders()
       if(OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
 
       const ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-      if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP)
+      if(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP ||
+         type == ORDER_TYPE_BUY_LIMIT || type == ORDER_TYPE_SELL_LIMIT)
          count++;
    }
    return count;
@@ -309,7 +367,8 @@ void DeleteAllMyPendingOrders()
       if(OrderGetInteger(ORDER_MAGIC) != InpMagic) continue;
 
       const ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-      if(type != ORDER_TYPE_BUY_STOP && type != ORDER_TYPE_SELL_STOP)
+      if(type != ORDER_TYPE_BUY_STOP && type != ORDER_TYPE_SELL_STOP &&
+         type != ORDER_TYPE_BUY_LIMIT && type != ORDER_TYPE_SELL_LIMIT)
          continue;
 
       if(!trade.OrderDelete(ticket))
@@ -339,15 +398,18 @@ bool PlaceBiGrid(const double anchorPrice, const int trendDir)
    bool anyPlaced = false;
    for(int level = 1; level <= InpGridLevelsPerSide; level++)
    {
-      const double buyStopPrice = NormalizeDouble(anchorPrice + (level * step), digits);
-      const double sellStopPrice = NormalizeDouble(anchorPrice - (level * step), digits);
+      const double upperPrice = NormalizeDouble(anchorPrice + (level * step), digits);
+      const double lowerPrice = NormalizeDouble(anchorPrice - (level * step), digits);
 
       if(trendDir >= 0)
       {
-         if(!trade.BuyStop(lot, buyStopPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid BuyStop"))
+         const bool placed = InpReverseGrid
+                             ? trade.BuyLimit(lot, lowerPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid BuyLimit")
+                             : trade.BuyStop(lot, upperPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid BuyStop");
+         if(!placed)
          {
             allOk = false;
-            Print("BuyStop failed level=", level,
+            Print((InpReverseGrid ? "BuyLimit" : "BuyStop"), " failed level=", level,
                   " retcode=", trade.ResultRetcode(),
                   " msg=", trade.ResultRetcodeDescription());
          }
@@ -359,10 +421,13 @@ bool PlaceBiGrid(const double anchorPrice, const int trendDir)
 
       if(trendDir <= 0)
       {
-         if(!trade.SellStop(lot, sellStopPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid SellStop"))
+         const bool placed = InpReverseGrid
+                             ? trade.SellLimit(lot, upperPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid SellLimit")
+                             : trade.SellStop(lot, lowerPrice, g_symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, "BiGrid SellStop");
+         if(!placed)
          {
             allOk = false;
-            Print("SellStop failed level=", level,
+            Print((InpReverseGrid ? "SellLimit" : "SellStop"), " failed level=", level,
                   " retcode=", trade.ResultRetcode(),
                   " msg=", trade.ResultRetcodeDescription());
          }
@@ -427,9 +492,6 @@ void ManageBasketExit()
 
 void RearmGridIfNeeded()
 {
-   if(!IsSpreadOk())
-      return;
-
    if((TimeCurrent() - g_lastRearmTime) < InpMinSecondsBetweenRearm)
       return;
 
@@ -438,6 +500,12 @@ void RearmGridIfNeeded()
    UpdateSessionPauseState(posCount);
 
    if(!IsNewGridAllowedNow(posCount))
+      return;
+
+   if(pendingCount > 0)
+      return;
+
+   if(!IsSpreadOk())
       return;
 
    int trendDir = 0;
@@ -451,9 +519,6 @@ void RearmGridIfNeeded()
          return;
       }
    }
-
-   if(pendingCount > 0)
-      return;
 
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
@@ -481,6 +546,12 @@ int OnInit()
          InpPauseHourBroker < 0 || InpPauseHourBroker > 23)
       {
          Print("Init fail | invalid session hour | start/pause must be 0..23");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+
+      if(InpMondayOpenDelayMinutes < 0)
+      {
+         Print("Init fail | Monday open delay must be >= 0");
          return(INIT_PARAMETERS_INCORRECT);
       }
 
@@ -512,10 +583,12 @@ int OnInit()
          " lot=", DoubleToString(InpFixedLot, 2),
          " gridPips=", DoubleToString(InpGridDistancePips, 1),
          " levels=", (string)InpGridLevelsPerSide,
+         " | ReverseGrid=", (InpReverseGrid ? "true" : "false"),
          " | UseTimeFilter=", (InpUseTimeFilter ? "true" : "false"),
          " | SessionTZ=", SessionTimeModeLabel(),
          " | StartHour=", (string)InpStartHourBroker,
          " | PauseHour=", (string)InpPauseHourBroker,
+         " | MondayOpenDelayMinutes=", (string)InpMondayOpenDelayMinutes,
          " | UseTrendFilter=", (InpUseTrendFilter ? "true" : "false"));
    return(INIT_SUCCEEDED);
 }

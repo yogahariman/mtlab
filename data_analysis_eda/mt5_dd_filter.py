@@ -11,8 +11,7 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 # Hardcode file input di sini.
 # Ubah sesuai kebutuhan: tambah/hapus nama file.
 INPUT_FILES = [
-    Path(r"/Drive/E/mt5/t1.csv"),
-    Path(r"/Drive/E/mt5/t2.csv"),
+    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_480.csv"),
 ]
 
 # Hardcode max DD di sini.

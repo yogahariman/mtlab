@@ -1,5 +1,5 @@
 //+----------------------------------------------------------------------+
-//| XAU_GridMarti.mq5                                      |
+//| XAU_GridMarti_PendingGrid.mq5                          |
 //| Directional table-driven grid EA for XAUUSD (MT5 Hedging)            |
 // Setting Telegram                                                      |
 // Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
@@ -36,13 +36,13 @@ input long   InpMagic                   = 260414; // Magic number
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_600.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
+input string InpTableFile               = "T1.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
 input group "Risk & Execution"
 input int    InpMaxPositions            = 0;      // Max grid positions (0=disabled)
-input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
+input int    InpMinSecondsBetweenOrders = 5;     // Min delay between orders
 input bool   InpUseCloseLock            = true;   // Use close-lock mode until all positions are closed
 input bool   InpUsePriorityCloseOrder   = true;   // Close by priority (lot desc, then profit asc)
 input bool   InpUseAsyncClose           = true;   // Send close requests asynchronously for faster batch close
@@ -51,6 +51,8 @@ input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in on
 input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
+input bool   InpUsePendingGridOrders    = true;   // Place grid levels as pending limit orders after first entry
+input double InpPendingGridMaxPriceDistance = 150.0; // Max price distance from first entry for pending grid (0=all levels)
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = false;   // Enable trading session filter
@@ -83,7 +85,6 @@ input int    InpEaActiveIntervalMinutes = 30;      // Periodic active message in
 
 input group "Daily Stats"
 input bool   InpEnableDailyStats        = true;    // Track and save daily profit + max DD for this EA (symbol+magic)
-input string InpDailyStatsFolder        = "DailyStats"; // Output subfolder under Files for daily stats CSV (blank=root Files)
 input bool   InpLogDailyStatsSummary    = true;    // Print daily summary when day changes/deinit
 
 struct SLevel
@@ -131,53 +132,12 @@ string g_dailyStatsFile = "";
 bool   g_lastAlgoTradingEnabled = true;
 datetime g_lastFirstEntryBarTime = 0;
 int    g_lastKnownPosCount = 0;
-
-string CleanRelativeFolder(const string folder)
-{
-   string cleaned = folder;
-   StringTrimLeft(cleaned);
-   StringTrimRight(cleaned);
-
-   while(StringLen(cleaned) > 0)
-   {
-      const ushort ch = StringGetCharacter(cleaned, StringLen(cleaned) - 1);
-      if(ch != '\\' && ch != '/')
-         break;
-      cleaned = StringSubstr(cleaned, 0, StringLen(cleaned) - 1);
-   }
-
-   while(StringLen(cleaned) > 0)
-   {
-      const ushort ch = StringGetCharacter(cleaned, 0);
-      if(ch != '\\' && ch != '/')
-         break;
-      cleaned = StringSubstr(cleaned, 1);
-   }
-
-   return cleaned;
-}
-
-string FileNameOnly(const string path)
-{
-   int startIndex = 0;
-   const int len = StringLen(path);
-   for(int i = len - 1; i >= 0; i--)
-   {
-      const ushort ch = StringGetCharacter(path, i);
-      if(ch == '\\' || ch == '/')
-      {
-         startIndex = i + 1;
-         break;
-      }
-   }
-
-   return StringSubstr(path, startIndex);
-}
+bool   g_pendingGridPlacedForBasket = false;
 
 string BuildDailyStatsFileFromTableFile(const string tableFile)
 {
    const long userId = AccountInfoInteger(ACCOUNT_LOGIN);
-   string baseName = FileNameOnly(tableFile);
+   string baseName = tableFile;
    string extension = ".csv";
    const int len = StringLen(baseName);
    int dotIndex = -1;
@@ -196,33 +156,7 @@ string BuildDailyStatsFileFromTableFile(const string tableFile)
       baseName = StringSubstr(baseName, 0, dotIndex);
    }
 
-   const string fileName = (string)userId + "_" + baseName + "_daily_stats" + extension;
-   const string folder = CleanRelativeFolder(InpDailyStatsFolder);
-   if(StringLen(folder) <= 0)
-      return fileName;
-
-   return (folder + "\\" + fileName);
-}
-
-bool EnsureDailyStatsFolder()
-{
-   const string folder = CleanRelativeFolder(InpDailyStatsFolder);
-   if(StringLen(folder) <= 0)
-      return true;
-
-   int folderFlags = 0;
-   if(InpUseCommonFiles)
-      folderFlags |= FILE_COMMON;
-
-   ResetLastError();
-   if(FolderCreate(folder, folderFlags))
-      return true;
-
-   const int err = GetLastError();
-   Print("Daily stats folder create fail | folder=", folder,
-         " | err=", err,
-         " | use_common=", (InpUseCommonFiles ? "true" : "false"));
-   return false;
+   return ((string)userId + "_" + baseName + "_daily_stats" + extension);
 }
 
 bool IsSellMode()
@@ -239,6 +173,8 @@ string ActiveSideLabel()
 {
    return (IsSellMode() ? "SELL" : "BUY");
 }
+
+int DeletePendingGridOrders(const string symbol, const long magic);
 
 // Hardcoded Telegram credentials (hidden from EA Properties/.set)
 const string TG_BOT_TOKEN = "8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw";
@@ -624,6 +560,8 @@ int CloseAllBuyPositions(const string symbol, const long magic)
 
 int CloseAllBuyPositionsWithRetries(const string symbol, const long magic, const int maxAttempts)
 {
+   DeletePendingGridOrders(symbol, magic);
+
    int attempts = maxAttempts;
    if(attempts <= 0)
       attempts = 1;
@@ -640,6 +578,9 @@ int CloseAllBuyPositionsWithRetries(const string symbol, const long magic, const
       prevRemain = remain;
    }
 
+   if(remain == 0)
+      g_pendingGridPlacedForBasket = false;
+
    return remain;
 }
 
@@ -655,6 +596,211 @@ bool SpreadOK(const string symbol, const double maxSpreadPips)
 
    const double spreadPips = (ask - bid) / pipPoint;
    return (spreadPips <= maxSpreadPips);
+}
+
+double NormalizePrice(const string symbol, const double price)
+{
+   const int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   return NormalizeDouble(price, digits);
+}
+
+bool IsActivePendingGridOrderType(const ENUM_ORDER_TYPE orderType)
+{
+   if(IsSellMode())
+      return (orderType == ORDER_TYPE_SELL_LIMIT);
+   return (orderType == ORDER_TYPE_BUY_LIMIT);
+}
+
+string PendingGridComment(const int levelIndex)
+{
+   return (IsSellMode() ? "TableGridSellLimitL" : "TableGridBuyLimitL") + (string)(levelIndex + 1);
+}
+
+bool PendingGridOrderExistsAtPrice(const string symbol, const long magic, const double price)
+{
+   const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   const double tolerance = (point > 0.0 ? point * 0.5 : 0.0000001);
+   const int total = OrdersTotal();
+   for(int i = 0; i < total; i++)
+   {
+      const ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != symbol) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != magic) continue;
+      if(!IsActivePendingGridOrderType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE))) continue;
+
+      const double orderPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      if(MathAbs(orderPrice - price) <= tolerance)
+         return true;
+   }
+   return false;
+}
+
+int DeletePendingGridOrders(const string symbol, const long magic)
+{
+   int remain = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      const ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != symbol) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != magic) continue;
+      if(!IsActivePendingGridOrderType((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE))) continue;
+
+      if(!trade.OrderDelete(ticket))
+      {
+         remain++;
+         Print("Pending delete fail | ticket=", (string)ticket,
+               " | retcode=", (string)trade.ResultRetcode(),
+               " | desc=", trade.ResultRetcodeDescription());
+      }
+   }
+   return remain;
+}
+
+bool GetFirstPositionPrice(const string symbol, const long magic, double &firstPrice)
+{
+   bool found = false;
+   datetime firstTime = 0;
+   const ENUM_POSITION_TYPE activeType = ActivePositionType();
+   const int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != activeType) continue;
+
+      const datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+      if(!found || positionTime < firstTime)
+      {
+         firstTime = positionTime;
+         firstPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         found = true;
+      }
+   }
+   return found;
+}
+
+double PendingGridPriceFromAnchor(const string symbol, const double anchorPrice, const int levelIndex)
+{
+   double offsetPips = 0.0;
+   for(int i = 1; i <= levelIndex && i < g_levelCount; i++)
+      offsetPips += g_levels[i].gridPips;
+
+   const double offsetPrice = offsetPips * PipPoint(symbol);
+   if(IsSellMode())
+      return NormalizePrice(symbol, anchorPrice + offsetPrice);
+   return NormalizePrice(symbol, anchorPrice - offsetPrice);
+}
+
+bool PendingGridPriceIsValidNow(const string symbol, const double price)
+{
+   const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   const int stopsLevel = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   const double minDistance = (stopsLevel > 0 && point > 0.0 ? stopsLevel * point : 0.0);
+   const double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   const double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+
+   if(IsSellMode())
+      return (price >= (bid + minDistance));
+   return (price <= (ask - minDistance));
+}
+
+bool PlacePendingGridOrder(const string symbol, const int levelIndex, const double price)
+{
+   if(levelIndex <= 0 || levelIndex >= g_levelCount)
+      return false;
+
+   if(!PendingGridPriceIsValidNow(symbol, price))
+   {
+      if(!IsTesterRun())
+         Print("Pending grid skip | level=", (levelIndex + 1),
+               " | price=", DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+               " | reason=price_too_close_or_already_crossed");
+      return false;
+   }
+
+   const double vol = NormalizeVolume(g_levels[levelIndex].lot, symbol);
+   const string comment = PendingGridComment(levelIndex);
+   const bool ok = (IsSellMode()
+                    ? trade.SellLimit(vol, price, symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, comment)
+                    : trade.BuyLimit(vol, price, symbol, 0.0, 0.0, ORDER_TIME_GTC, 0, comment));
+   if(!ok)
+   {
+      Print("Pending grid place fail | level=", (levelIndex + 1),
+            " | side=", ActiveSideLabel(),
+            " | lot=", DoubleToString(vol, 2),
+            " | price=", DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)),
+            " | retcode=", (string)trade.ResultRetcode(),
+            " | desc=", trade.ResultRetcodeDescription());
+      return false;
+   }
+
+   if(!IsTesterRun())
+      Print("Pending grid placed | level=", (levelIndex + 1),
+            " | side=", ActiveSideLabel(),
+            " | lot=", DoubleToString(vol, 2),
+            " | price=", DoubleToString(price, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)));
+   return true;
+}
+
+void PlaceInitialPendingGridOrders(const int posCount)
+{
+   if(!InpUsePendingGridOrders)
+      return;
+   if(posCount <= 0)
+   {
+      DeletePendingGridOrders(g_symbol, InpMagic);
+      g_pendingGridPlacedForBasket = false;
+      return;
+   }
+   if(g_pendingGridPlacedForBasket)
+      return;
+   if(!IsTradeAllowed())
+      return;
+   if(!IsGridEntryAllowedNow(posCount))
+      return;
+
+   int maxCount = g_levelCount;
+   if(g_maxPositions > 0 && g_maxPositions < maxCount)
+      maxCount = g_maxPositions;
+
+   if(posCount >= maxCount)
+   {
+      DeletePendingGridOrders(g_symbol, InpMagic);
+      g_pendingGridPlacedForBasket = true;
+      return;
+   }
+
+   double anchorPrice = 0.0;
+   if(!GetFirstPositionPrice(g_symbol, InpMagic, anchorPrice))
+      return;
+
+   int placed = 0;
+   for(int levelIndex = posCount; levelIndex < maxCount; levelIndex++)
+   {
+      const double price = PendingGridPriceFromAnchor(g_symbol, anchorPrice, levelIndex);
+      const double distance = MathAbs(price - anchorPrice);
+      if(InpPendingGridMaxPriceDistance > 0.0 && distance > InpPendingGridMaxPriceDistance)
+         break;
+
+      if(PendingGridOrderExistsAtPrice(g_symbol, InpMagic, price))
+      {
+         placed++;
+         continue;
+      }
+      if(PlacePendingGridOrder(g_symbol, levelIndex, price))
+         placed++;
+   }
+
+   g_pendingGridPlacedForBasket = true;
+   if(!IsTesterRun())
+      Print("Initial pending grid done | placed_or_existing=", placed,
+            " | maxDistance=", DoubleToString(InpPendingGridMaxPriceDistance, 2),
+            " | maxPositions=", (string)maxCount);
 }
 
 bool OpenBuy(const string symbol, const double lot, const string comment)
@@ -890,6 +1036,7 @@ void ActivateCloseLock(const string reason)
          Print("Close lock ON | reason=", reason);
    }
 
+   DeletePendingGridOrders(g_symbol, InpMagic);
    g_closeLockActive = true;
    g_closeLockLastRemain = -1;
    g_closeLockWaitTradePrinted = false;
@@ -917,6 +1064,8 @@ bool ProcessCloseLock(const int posCount)
 
    if(posCount <= 0)
    {
+      DeletePendingGridOrders(g_symbol, InpMagic);
+      g_pendingGridPlacedForBasket = false;
       DeactivateCloseLock();
       return true;
    }
@@ -935,6 +1084,7 @@ bool ProcessCloseLock(const int posCount)
    if(remain == 0)
    {
       ResetTrailState();
+      DeletePendingGridOrders(g_symbol, InpMagic);
       DeactivateCloseLock();
    }
    else if(remain != g_closeLockLastRemain)
@@ -1437,8 +1587,6 @@ int OnInit()
 
    PrintCsvLocationGuide(InpTableFile);
    g_dailyStatsFile = BuildDailyStatsFileFromTableFile(InpTableFile);
-   if(InpEnableDailyStats && !EnsureDailyStatsFolder())
-      return INIT_FAILED;
 
    if(!LoadLevelTableFromCsv(InpTableFile))
       return INIT_FAILED;
@@ -1504,6 +1652,7 @@ int OnInit()
    g_lastAlgoTradingEnabled = IsAlgoTradingEnabled();
    g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
    g_lastKnownPosCount = CountBuyPositions(g_symbol, InpMagic);
+   g_pendingGridPlacedForBasket = false;
 
    const bool needTimer =
       (InpUseCloseLock ||
@@ -1547,7 +1696,9 @@ int OnInit()
             " | CloseAttempts=", (string)InpCloseAttemptsPerRun,
             " | CloseLockTimerMs=", (string)InpCloseLockTimerMs,
             " | MaxSpreadFirst=", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
-            " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1));
+            " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1),
+            " | PendingGrid=", (InpUsePendingGridOrders ? "true" : "false"),
+            " | PendingMaxDistance=", DoubleToString(InpPendingGridMaxPriceDistance, 2));
 
       if(InpFirstEntryOnNextCandleOpen && HasAnyFirstEntrySignalFilter())
          Print("Info | first_entry_on_next_candle_open=IGNORED | reason=first_entry_signal_filter_enabled");
@@ -1566,17 +1717,6 @@ int OnInit()
       Print("Init daily_stats | enabled=", (InpEnableDailyStats ? "true" : "false"),
             " | file=", g_dailyStatsFile,
             " | use_common=", (InpUseCommonFiles ? "true" : "false"));
-      if(InpEnableDailyStats)
-      {
-         if(InpUseCommonFiles)
-            Print("Daily stats path | ",
-                  TerminalInfoString(TERMINAL_COMMONDATA_PATH),
-                  "\\Files\\", g_dailyStatsFile);
-         else
-            Print("Daily stats path | ",
-                  TerminalInfoString(TERMINAL_DATA_PATH),
-                  "\\MQL5\\Files\\", g_dailyStatsFile);
-      }
 
       if(InpFloatingDDStopMoney > 0.0 && InpNotifyFloatingSLStop)
          Print("Telegram setup | allow_url=https://api.telegram.org");
@@ -1595,6 +1735,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   DeletePendingGridOrders(g_symbol, InpMagic);
    AppendDailyStatsRow();
 
    if(g_rsiHandle != INVALID_HANDLE)
@@ -1686,6 +1827,8 @@ void OnTick()
    if(posCount <= 0)
    {
       ResetTrailState();
+      DeletePendingGridOrders(g_symbol, InpMagic);
+      g_pendingGridPlacedForBasket = false;
       DeactivateCloseLock();
       g_maxPosWarnSent = false;
    }
@@ -1867,6 +2010,7 @@ void OnTick()
 
    if(g_maxPositions > 0 && posCount >= g_maxPositions)
    {
+      DeletePendingGridOrders(g_symbol, InpMagic);
       if(!g_maxPosWarnSent)
       {
          SendPauseWarning(posCount, "Max positions reached");
@@ -1877,6 +2021,12 @@ void OnTick()
 
    if(!IsTradeAllowed())
       return;
+
+   if(InpUsePendingGridOrders && posCount > 0)
+   {
+      PlaceInitialPendingGridOrders(posCount);
+      return;
+   }
 
    if(InpMinSecondsBetweenOrders > 0 && (TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
       return;
@@ -1910,7 +2060,12 @@ void OnTick()
          Print("Open first entry | level=", (levelIndex + 1),
                " | side=", ActiveSideLabel(),
                " | lot=", DoubleToString(lot, 2));
-      OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
+      if(OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy")) &&
+         InpUsePendingGridOrders)
+      {
+         const int freshPosCount = CountBuyPositions(g_symbol, InpMagic);
+         PlaceInitialPendingGridOrders(freshPosCount);
+      }
       return;
    }
 
