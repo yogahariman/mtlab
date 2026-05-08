@@ -32,7 +32,7 @@ TRADE_COST = 0.0
 
 MT5_PATH = "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
 EXPORT_ONNX = True
-ONNX_PATH = "model_multi.onnx"
+ONNX_PATH = "model_random_forest.onnx"
 
 
 TIMEFRAMES = {
@@ -176,6 +176,12 @@ def split_time_series(
         y.iloc[train_end:valid_end],
         y.iloc[valid_end:],
     )
+
+
+def rename_features_for_onnx(X: pd.DataFrame) -> pd.DataFrame:
+    X_model = X.copy()
+    X_model.columns = [f"f{i}" for i in range(X_model.shape[1])]
+    return X_model
 
 
 def create_model(model_name: str, random_state: int = 42):
@@ -338,10 +344,14 @@ def main() -> None:
     X, y, features = build_features(rates_frame, TARGET_BARS)
     print(f"Feature rows: {len(X)}")
     print(f"Features: {len(features)}")
-    print("Columns:", list(X.columns))
+    print("Feature order for EA input:")
+    for idx, col in enumerate(features):
+        print(f"  f{idx}: {col}")
+
+    X_model = rename_features_for_onnx(X)
 
     X_train, X_valid, X_test, y_train, y_valid, y_test = split_time_series(
-        X, y, TRAIN_RATIO, VALID_RATIO
+        X_model, y, TRAIN_RATIO, VALID_RATIO
     )
 
     model = create_model(MODEL_NAME)

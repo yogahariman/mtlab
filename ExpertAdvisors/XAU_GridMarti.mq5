@@ -36,7 +36,7 @@ input long   InpMagic                   = 260414; // Magic number
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_600.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
+input string InpTableFile               = "T1_640.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
