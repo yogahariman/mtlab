@@ -11,50 +11,17 @@ import pandas as pd
 # =========================
 # Konfigurasi utama
 # =========================
-# Ubah daftar file sesuai lokasi data Anda.
+# INPUT_FOLDER = Path(r"/Drive/E/mt5")
+INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024")
+INPUT_START = 460
+INPUT_END = 800
+INPUT_STEP = 20
 INPUT_FILES = [
-    Path(r"/Drive/E/mt5/t80.csv"),
-    Path(r"/Drive/E/mt5/t160.csv"),
-    Path(r"/Drive/E/mt5/t240.csv"),
-    Path(r"/Drive/E/mt5/t320.csv"),
-    Path(r"/Drive/E/mt5/t400.csv"),
-    Path(r"/Drive/E/mt5/t420.csv"),
-    Path(r"/Drive/E/mt5/t440.csv"),
-    Path(r"/Drive/E/mt5/t460.csv"),
-    Path(r"/Drive/E/mt5/t480.csv"),
-    Path(r"/Drive/E/mt5/t500.csv"),
-    Path(r"/Drive/E/mt5/t520.csv"),
-    Path(r"/Drive/E/mt5/t540.csv"),
-    Path(r"/Drive/E/mt5/t560.csv"),
-    Path(r"/Drive/E/mt5/t580.csv"),
-    Path(r"/Drive/E/mt5/t600.csv"),
-    Path(r"/Drive/E/mt5/t620.csv"),
-    Path(r"/Drive/E/mt5/t640.csv"),
-    Path(r"/Drive/E/mt5/t720.csv"),
-    Path(r"/Drive/E/mt5/t800.csv"),
-    Path(r"/Drive/E/mt5/t880.csv"),
-    Path(r"/Drive/E/mt5/t960.csv"),
-    Path(r"/Drive/E/mt5/t1040.csv"),
-    Path(r"/Drive/E/mt5/t1120.csv"),
-    Path(r"/Drive/E/mt5/t1200.csv"),
-    Path(r"/Drive/E/mt5/t1280.csv"),
-    Path(r"/Drive/E/mt5/t1360.csv"),
-    Path(r"/Drive/E/mt5/t1440.csv"),
-    Path(r"/Drive/E/mt5/t1520.csv"),
-    Path(r"/Drive/E/mt5/t1600.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_460.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_480.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_500.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_520.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_540.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_560.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_580.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_600.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_620.csv"),
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020\t1_640.csv"),
-    ]
+    INPUT_FOLDER / f"{grid}.csv"
+    for grid in range(INPUT_START, INPUT_END + 1, INPUT_STEP)
+]
 
-INITIAL_CAPITAL = 10_000.0
+INITIAL_CAPITAL = 11_000.0
 WEEKDAYS_ONLY = True
 USE_BALANCE_FOR_DAILY_PNL = True
 

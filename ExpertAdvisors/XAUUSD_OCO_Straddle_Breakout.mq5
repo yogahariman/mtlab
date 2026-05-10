@@ -22,7 +22,7 @@ input int    InpCooldownSecondsAfterClose = 0;     // Cooldown before re-place p
 input group "Risk"
 input double InpStopLossPips              = 300.0;  // Stop loss distance in pips per position (0=off)
 input double InpTakeProfitPips            = 60.0;  // Take profit distance in pips per position (0=off)
-input int    InpMaxSpreadPips             = 35;     // Max spread to place/re-place pending (0=off)
+input int    InpMaxSpreadPips             = 50;     // Max spread to place/re-place pending (0=off)
 
 input group "Trailing (Pips)"
 input bool   InpUseTrail                  = true;    // Enable pips-based trailing close

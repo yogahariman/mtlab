@@ -47,3 +47,8 @@ logs/
 
 # Local MT5 scratch area
 ExpertAdvisors/Temp/
+
+# XAU ML EA generated artifacts
+xau_ml_ea/data/
+xau_ml_ea/*.onnx
+xau_ml_ea/feature_order.txt
