@@ -1,5 +1,5 @@
 //+----------------------------------------------------------------------+
-//| XAU_GridMarti.mq5                                      |
+//| XAU_GridMarti_Table.mq5                                      |
 //| Directional table-driven grid EA for XAUUSD (MT5 Hedging)            |
 // Setting Telegram                                                      |
 // Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
@@ -36,7 +36,7 @@ input long   InpMagic                   = 260414; // Magic number
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_660.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,grid,tp
+input string InpTableFile               = "T2_390.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -91,7 +91,7 @@ input bool   InpLogDailyStatsSummary    = true;    // Print daily summary when d
 struct SLevel
 {
    double lot;
-   double gridPips;
+   double gridPoints;
    double tpMoney;
 };
 
@@ -1263,7 +1263,7 @@ void PrintCsvLocationGuide(const string filename)
    }
 }
 
-bool ParseCsvLevelRow(const string row, double &lot, double &gridPips, double &tpMoney)
+bool ParseCsvLevelRow(const string row, double &lot, double &gridPoints, double &tpMoney)
 {
    string text = row;
    StringTrimLeft(text);
@@ -1292,9 +1292,9 @@ bool ParseCsvLevelRow(const string row, double &lot, double &gridPips, double &t
    StringTrimRight(stp);
 
    lot = StringToDouble(slot);
-   gridPips = StringToDouble(sgrid);
+   gridPoints = StringToDouble(sgrid);
    tpMoney = StringToDouble(stp);
-   if(lot <= 0.0 || gridPips <= 0.0 || tpMoney <= 0.0)
+   if(lot <= 0.0 || gridPoints <= 0.0 || tpMoney <= 0.0)
       return false;
 
    return true;
@@ -1344,12 +1344,12 @@ bool LoadLevelTableFromCsv(const string filename)
       firstDataRowHandled = true;
 
       double lot = 0.0;
-      double gridPips = 0.0;
+      double gridPoints = 0.0;
       double tpMoney = 0.0;
-      if(!ParseCsvLevelRow(line, lot, gridPips, tpMoney))
+      if(!ParseCsvLevelRow(line, lot, gridPoints, tpMoney))
       {
          Print("CSV row invalid | line=", lineNo,
-               " | row='", line, "' | expected=lot,grid,tp (all >0)");
+               " | row='", line, "' | expected=lot,gridPoints,tpMoney (all >0)");
          FileClose(handle);
          return false;
       }
@@ -1357,7 +1357,7 @@ bool LoadLevelTableFromCsv(const string filename)
       const int newSize = g_levelCount + 1;
       ArrayResize(g_levels, newSize);
       g_levels[g_levelCount].lot = lot;
-      g_levels[g_levelCount].gridPips = gridPips;
+      g_levels[g_levelCount].gridPoints = gridPoints;
       g_levels[g_levelCount].tpMoney = tpMoney;
       g_levelCount = newSize;
    }
@@ -1374,7 +1374,7 @@ bool LoadLevelTableFromCsv(const string filename)
    return true;
 }
 
-bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &lot, double &gridPips, double &tpMoney)
+bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &lot, double &gridPoints, double &tpMoney)
 {
    if(g_levelCount <= 0)
       return false;
@@ -1385,7 +1385,7 @@ bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &l
 
    levelIndex = idx;
    lot = g_levels[idx].lot;
-   gridPips = g_levels[idx].gridPips;
+   gridPoints = g_levels[idx].gridPoints;
    tpMoney = g_levels[idx].tpMoney;
    return true;
 }
@@ -1398,8 +1398,8 @@ bool GetCurrentGridTpMoney(const int posCount, double &tpMoney)
    // posCount=1 means level index 0.
    int levelIndex = -1;
    double lot = 0.0;
-   double gridPips = 0.0;
-   return GetLevelByPositionCount(posCount - 1, levelIndex, lot, gridPips, tpMoney);
+   double gridPoints = 0.0;
+   return GetLevelByPositionCount(posCount - 1, levelIndex, lot, gridPoints, tpMoney);
 }
 
 int OnInit()
@@ -1590,7 +1590,7 @@ int OnInit()
       for(int i = 0; i < g_levelCount; i++)
       {
          Print("Level ", (i + 1), " | lot=", DoubleToString(g_levels[i].lot, 2),
-               " | gridPips=", DoubleToString(g_levels[i].gridPips, 1),
+               " | gridPoints=", DoubleToString(g_levels[i].gridPoints, 1),
                " | tpMoney=", DoubleToString(g_levels[i].tpMoney, 2));
       }
    }
@@ -1888,10 +1888,10 @@ void OnTick()
       return;
 
    double lot;
-   double gridPips;
+   double gridPoints;
    double tpMoney;
    int levelIndex = -1;
-   if(!GetLevelByPositionCount(posCount, levelIndex, lot, gridPips, tpMoney))
+   if(!GetLevelByPositionCount(posCount, levelIndex, lot, gridPoints, tpMoney))
       return;
 
    if(posCount == 0)
@@ -1924,7 +1924,7 @@ void OnTick()
       return;
    const double latest_price = snapshot.latestPrice;
 
-   const double gridPrice = gridPips * PipPoint(g_symbol);
+   const double gridPrice = gridPoints * PipPoint(g_symbol);
    const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    const bool shouldOpenGrid = (IsSellMode()
@@ -1942,7 +1942,7 @@ void OnTick()
          Print("Open grid entry | level=", (levelIndex + 1),
                " | side=", ActiveSideLabel(),
                " | lot=", DoubleToString(lot, 2),
-               " | gridPips=", DoubleToString(gridPips, 1),
+               " | gridPoints=", DoubleToString(gridPoints, 1),
                " | tpMoney=", DoubleToString(tpMoney, 2));
       OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
    }

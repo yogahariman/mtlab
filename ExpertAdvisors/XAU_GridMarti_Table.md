@@ -1,14 +1,14 @@
-# README - XAU_GridMarti
+# README - XAU_GridMarti_Table
 
-Dokumentasi ringkas EA berdasarkan implementasi saat ini.  
-File utama: `ExpertAdvisors/XAU_GridMarti.mq5`
+Dokumentasi ringkas EA versi tabel berdasarkan implementasi saat ini.  
+File utama: `ExpertAdvisors/XAU_GridMarti_Table.mq5`
 
 ## 1) Tujuan EA
 - EA grid-martingale untuk `XAUUSD` pada akun `Hedging`.
 - Mendukung 2 mode arah via `InpTradeMode`:
 - `TRADE_BUY_ONLY`
 - `TRADE_SELL_ONLY`
-- Entry/lot/spacing/TP level diambil dari CSV tabel (`lot,grid,tp`).
+- Entry/lot/spacing/TP level diambil dari CSV tabel (`lot,gridPoints,tpMoney`); versi ini dipertahankan sebagai basis EA berbasis tabel.
 - Exit pakai kombinasi `level TP`, `basket TP`, `trailing`, dan `floating DD stop`.
 
 ## 2) Validasi Penting Saat Init
@@ -29,7 +29,7 @@ File utama: `ExpertAdvisors/XAU_GridMarti.mq5`
 ## 4) Format dan Lokasi CSV Level
 Format wajib:
 ```csv
-lot,grid,tp
+lot,gridPoints,tpMoney
 0.01,20,1.0
 0.01,25,2.5
 0.02,30,4.0
@@ -52,7 +52,7 @@ Catatan:
 - basket TP default
 - basket trailing
 5. Jika tidak ada posisi, evaluasi first-entry filter lalu buka posisi pertama.
-6. Jika ada posisi, evaluasi trigger grid berikutnya sesuai jarak `gridPips`.
+6. Jika ada posisi, evaluasi trigger grid berikutnya sesuai jarak `gridPoints`.
 
 ## 6) Daily Stats
 - Diaktifkan oleh `InpEnableDailyStats`.

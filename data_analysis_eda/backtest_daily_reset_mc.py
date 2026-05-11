@@ -11,17 +11,17 @@ import pandas as pd
 # =========================
 # Konfigurasi utama
 # =========================
-# INPUT_FOLDER = Path(r"/Drive/E/mt5")
-INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024")
-INPUT_START = 460
-INPUT_END = 800
-INPUT_STEP = 20
+INPUT_FOLDER = Path(r"/Drive/E/mt5")
+# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024")
+INPUT_START = 360
+INPUT_END = 580
+INPUT_STEP = 10
 INPUT_FILES = [
     INPUT_FOLDER / f"{grid}.csv"
     for grid in range(INPUT_START, INPUT_END + 1, INPUT_STEP)
 ]
 
-INITIAL_CAPITAL = 11_000.0
+INITIAL_CAPITAL = 10_000.0
 WEEKDAYS_ONLY = True
 USE_BALANCE_FOR_DAILY_PNL = True
 
