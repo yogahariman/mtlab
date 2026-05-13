@@ -11,8 +11,8 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 # Hardcode file input di sini.
 # Ubah sesuai kebutuhan: tambah/hapus nama file.
 INPUT_FILES = [
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024\740.csv"),
-    # Path(r"/Drive/E/mt5/t1200.csv"),
+    # Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024\100_001.csv"),
+    Path(r"/Drive/E/mt5/t1_490.csv"),
 ]
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020")
 # INPUT_START = 400
@@ -24,7 +24,7 @@ INPUT_FILES = [
 # ]
 
 # Hardcode max DD di sini.
-MAX_DD = 11_000
+MAX_DD = 10_000
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

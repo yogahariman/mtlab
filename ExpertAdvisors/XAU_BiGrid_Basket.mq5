@@ -25,7 +25,7 @@ input group "Grid"
 input double InpGridDistancePips        = 250.0;
 input int    InpGridLevelsPerSide       = 8;
 input int    InpMinSecondsBetweenRearm  = 30;
-input bool   InpReverseGrid             = true; // false=BuyStop above/SellStop below, true=SellLimit above/BuyLimit below
+input bool   InpReverseGrid             = false; // false=BuyStop above/SellStop below, true=SellLimit above/BuyLimit below
 
 input group "Basket Exit"
 input double InpBasketTPMoney           = 20.0;
@@ -454,7 +454,8 @@ void ManageBasketExit()
 {
    if(CountMyPositions() <= 0)
    {
-      g_closeLockActive = false;
+      if(CountMyPendingOrders() <= 0)
+         g_closeLockActive = false;
       return;
    }
 

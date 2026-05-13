@@ -13,15 +13,15 @@ import pandas as pd
 # =========================
 INPUT_FOLDER = Path(r"/Drive/E/mt5")
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2024")
-INPUT_START = 360
-INPUT_END = 580
+INPUT_START = 450
+INPUT_END = 510
 INPUT_STEP = 10
 INPUT_FILES = [
-    INPUT_FOLDER / f"{grid}.csv"
+    INPUT_FOLDER / f"t1_{grid}.csv"
     for grid in range(INPUT_START, INPUT_END + 1, INPUT_STEP)
 ]
 
-INITIAL_CAPITAL = 10_000.0
+INITIAL_CAPITAL = 20_000.0
 WEEKDAYS_ONLY = True
 USE_BALANCE_FOR_DAILY_PNL = True
 
