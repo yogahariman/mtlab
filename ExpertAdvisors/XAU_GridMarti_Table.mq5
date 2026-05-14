@@ -36,7 +36,7 @@ input long   InpMagic                   = 260414; // Magic number
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_480.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
+input string InpTableFile               = "T1_660.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -59,7 +59,7 @@ input int    InpStartHourBroker         = 1;      // Start first entries from th
 input int    InpPauseHourBroker         = 18;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
-input bool   InpFirstEntryOnNextCandleOpen = false; // First entry only on next candle open (first tick of new bar)
+input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
@@ -79,14 +79,14 @@ input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when
 input group "Telegram Alerts"
 input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk"; // Telegram bot token
 input string InpTelegramChatId          = "1448627275"; // Telegram chat id
-input bool   InpNotifyFloatingSLStop    = true;    // Send Telegram alert when floating SL stop is triggered
+input bool   InpNotifyFloatingSLStop    = false;    // Send Telegram alert when floating SL stop is triggered
 input bool   InpNotifyEaActive          = true;    // Send periodic Telegram message that EA is active
 input int    InpEaActiveIntervalMinutes = 30;      // Periodic active message interval in minutes
 
 input group "Daily Stats"
-input bool   InpEnableDailyStats        = true;    // Track and save daily profit + max DD for this EA (symbol+magic)
+input bool   InpEnableDailyStats        = false;    // Track and save daily profit + max DD for this EA (symbol+magic)
 input string InpDailyStatsFolder        = "DailyStats"; // Output subfolder under Files for daily stats CSV (blank=root Files)
-input bool   InpLogDailyStatsSummary    = true;    // Print daily summary when day changes/deinit
+input bool   InpLogDailyStatsSummary    = false;    // Print daily summary when day changes/deinit
 
 struct SLevel
 {
