@@ -50,7 +50,7 @@ input double InpCloseDeviationPips      = 30.0;   // Max deviation in pips for c
 input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in one run (keep 1 for async burst)
 input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
-input double InpMaxSpreadGridEntryPips  = 50;      // Max spread for grid entry in pips (0=disabled)
+input double InpMaxSpreadGridEntryPips  = 200;      // Max spread for grid entry in pips (0=disabled)
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = false;   // Enable trading session filter
