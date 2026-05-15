@@ -32,11 +32,11 @@ enum ETradeMode
 };
 
 input group "General"
-input long   InpMagic                   = 260414; // Magic number
+input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][TF/SET]
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_660.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
+input string InpTableFile               = "T1_680.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -81,7 +81,7 @@ input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklb
 input string InpTelegramChatId          = "1448627275"; // Telegram chat id
 input bool   InpNotifyFloatingSLStop    = false;    // Send Telegram alert when floating SL stop is triggered
 input bool   InpNotifyEaActive          = true;    // Send periodic Telegram message that EA is active
-input int    InpEaActiveIntervalMinutes = 30;      // Periodic active message interval in minutes
+input int    InpEaActiveIntervalMinutes = 10;      // Periodic active message interval in minutes
 
 input group "Daily Stats"
 input bool   InpEnableDailyStats        = false;    // Track and save daily profit + max DD for this EA (symbol+magic)
