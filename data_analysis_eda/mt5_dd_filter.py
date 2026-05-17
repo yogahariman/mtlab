@@ -8,23 +8,16 @@ from typing import List, Optional, Tuple
 
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
 
-# Hardcode file input di sini.
-# Ubah sesuai kebutuhan: tambah/hapus nama file.
-INPUT_FILES = [
-    Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025\t1_490.csv"),
-    # Path(r"/Drive/E/mt5/t1_490.csv"),
-]
-# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2020")
-# INPUT_START = 400
-# INPUT_END = 660
-# INPUT_STEP = 20
-# INPUT_FILES = [
-#     INPUT_FOLDER / f"{grid}.csv"
-#     for grid in range(INPUT_START, INPUT_END + 1, INPUT_STEP)
-# ]
+# Pilih salah satu:
+# 1) Isi INPUT_FILES manual, atau
+# 2) Kosongkan INPUT_FILES dan pakai INPUT_FOLDER + INPUT_PATTERN.
+INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
+# INPUT_FOLDER = Path(r"/Drive/E/mt5")
+INPUT_PATTERN = "405_15*.csv"
+INPUT_FILES: List[Path] = []
 
 # Hardcode max DD di sini.
-MAX_DD = 20_000
+MAX_DD = 2_000
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -36,16 +29,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def get_hardcoded_input_paths() -> Tuple[List[Path], List[str]]:
-    existing: List[Path] = []
-    missing: List[str] = []
+def get_input_paths(files: List[Path], folder: Path, pattern: str) -> Tuple[List[Path], List[Path]]:
+    candidates = files if files else sorted(folder.glob(pattern))
 
-    for name in INPUT_FILES:
-        p = Path(name)
-        if p.is_file():
-            existing.append(p)
+    existing: List[Path] = []
+    missing: List[Path] = []
+
+    for path in candidates:
+        if path.is_file():
+            existing.append(path)
         else:
-            missing.append(str(p))
+            missing.append(path)
 
     return existing, missing
 
@@ -130,7 +124,7 @@ def read_rows(path: Path):
 
 def main() -> int:
     parse_args()
-    files, missing_files = get_hardcoded_input_paths()
+    files, missing_files = get_input_paths(INPUT_FILES, INPUT_FOLDER, INPUT_PATTERN)
 
     if missing_files:
         print(f"File dilewati (tidak ada): {len(missing_files)}")
@@ -138,8 +132,9 @@ def main() -> int:
             print(f" - {mf}")
 
     if not files:
-        print("Tidak ada file input hardcode yang ditemukan. Semua file dilewati.")
-        print(f"Daftar hardcode saat ini: {', '.join(INPUT_FILES)}")
+        print("Tidak ada file input yang ditemukan.")
+        print(f"Folder : {INPUT_FOLDER}")
+        print(f"Pattern: {INPUT_PATTERN}")
         return 0
 
     total_rows = 0
@@ -158,6 +153,8 @@ def main() -> int:
 
     sorted_dates = sorted(filtered_dates, key=sort_date_key)
 
+    print(f"Folder input     : {INPUT_FOLDER}")
+    print(f"Pattern input    : {INPUT_PATTERN}")
     print(f"File dibaca      : {len(files)}")
     print(f"Total baris valid: {total_rows}")
     print(f"Tanggal unik DD>={MAX_DD}: {len(sorted_dates)}")

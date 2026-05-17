@@ -13,13 +13,8 @@ import pandas as pd
 # =========================
 # INPUT_FOLDER = Path(r"/Drive/E/mt5")
 INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
-INPUT_START = 360
-INPUT_END = 520
-INPUT_STEP = 10
-INPUT_FILES = [
-    INPUT_FOLDER / f"t1_{grid}.csv"
-    for grid in range(INPUT_START, INPUT_END + 1, INPUT_STEP)
-]
+INPUT_PATTERN = "t1_*.csv"
+INPUT_FILES: list[Path] = []
 
 INITIAL_CAPITAL = 30_000.0
 WEEKDAYS_ONLY = True
@@ -131,6 +126,19 @@ def read_rows(path: Path) -> Iterable[ParsedRow]:
         parsed = parse_row(row)
         if parsed is not None:
             yield parsed
+
+
+def get_input_paths(files: list[Path], folder: Path, pattern: str) -> tuple[list[Path], list[Path]]:
+    candidates = files if files else sorted(folder.glob(pattern))
+
+    existing: list[Path] = []
+    missing: list[Path] = []
+    for path in candidates:
+        if path.is_file():
+            existing.append(path)
+        else:
+            missing.append(path)
+    return existing, missing
 
 
 def simulate_daily_reset(df_intraday: pd.DataFrame, label: str) -> tuple[pd.DataFrame, dict]:
@@ -254,14 +262,27 @@ def main():
     print(f"Weekdays only                : {WEEKDAYS_ONLY}")
     print(f"Use balance for daily pnl    : {USE_BALANCE_FOR_DAILY_PNL}")
 
+    files, missing = get_input_paths(INPUT_FILES, INPUT_FOLDER, INPUT_PATTERN)
+
+    if missing:
+        print(f"File dilewati (tidak ada): {len(missing)}")
+        for path in missing:
+            print(f" - {path}")
+
+    if not files:
+        print("Tidak ada file input yang ditemukan.")
+        print(f"Folder : {INPUT_FOLDER}")
+        print(f"Pattern: {INPUT_PATTERN}")
+        return
+
+    print(f"Folder input                : {INPUT_FOLDER}")
+    print(f"Pattern input               : {INPUT_PATTERN}")
+    print(f"File ditemukan              : {len(files)}")
+
     all_daily = []
     summaries = []
 
-    for file_path in INPUT_FILES:
-        if not file_path.exists():
-            print(f"[SKIP] File tidak ditemukan: {file_path}")
-            continue
-
+    for file_path in files:
         daily_df, summary = analyze_file(file_path)
         all_daily.append(daily_df)
         summaries.append(summary)

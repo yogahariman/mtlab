@@ -20,9 +20,9 @@ from typing import Iterable
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
 #
 # Contoh WSL/Linux:
-INPUT_FOLDER = Path(r"/Drive/E/mt5")
-# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
-INPUT_PATTERN = "t1_*.csv"
+# INPUT_FOLDER = Path(r"/Drive/E/mt5")
+INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
+INPUT_PATTERN = "405_*.csv"
 INPUT_FILES: list[Path] = []
 
 WEEKDAYS_ONLY = True
