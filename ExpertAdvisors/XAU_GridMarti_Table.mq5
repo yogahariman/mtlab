@@ -36,7 +36,7 @@ input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_680.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
+input string InpTableFile               = "T1_900.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -56,7 +56,7 @@ input group "Trading Session"
 input bool   InpUseTimeFilter           = false;   // Enable trading session filter
 input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_UTC; // Session input timezone: broker/UTC/WIB(UTC+7)
 input int    InpStartHourBroker         = 1;      // Start first entries from this hour in selected session timezone (00-23)
-input int    InpPauseHourBroker         = 18;     // Pause-prep starts from this hour in selected session timezone (00-23)
+input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
 input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
@@ -65,7 +65,7 @@ input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
 input bool   InpUseFirstEntryBullishCandle = false; // First entry candle direction filter (buy=bullish, sell=bearish)
 input int    InpFirstEntryMaPeriod      = 5;      // First entry MA period
-input EFirstEntryMaType InpFirstEntryMaType = MA_EXPONENTIAL; // MA type: simple/exponential
+input EFirstEntryMaType InpFirstEntryMaType = MA_SIMPLE; // MA type: simple/exponential
 input int    InpRsiPeriod               = 14;     // RSI period
 input double InpRsiThreshold            = 50.0;   // First entry allowed only if RSI < threshold
 input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev >= value
@@ -74,12 +74,12 @@ input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input double InpTrailStartMoney         = 100.0;   // Mode switch: table TP <= value => fixed TP, table TP > value => start trailing after profit reaches table TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
-input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
+input double InpFloatingDDStopMoney     = 3000.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 
 input group "Telegram Alerts"
 input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk"; // Telegram bot token
 input string InpTelegramChatId          = "1448627275"; // Telegram chat id
-input bool   InpNotifyFloatingSLStop    = false;    // Send Telegram alert when floating SL stop is triggered
+input bool   InpNotifyFloatingSLStop    = true;    // Send Telegram alert when floating SL stop is triggered
 input bool   InpNotifyEaActive          = true;    // Send periodic Telegram message that EA is active
 input int    InpEaActiveIntervalMinutes = 10;      // Periodic active message interval in minutes
 
@@ -121,6 +121,7 @@ bool   g_closeLockActive = false;
 int    g_closeLockLastRemain = -1;
 bool   g_closeLockWaitTradePrinted = false;
 bool   g_stopTradingByFloatingSL = false;
+int    g_floatingSLStopDateKey = 0;
 bool   g_sessionPauseUntilStart = false;
 bool   g_dailyStatsInitialized = false;
 int    g_dailyDateKey = 0;
@@ -290,6 +291,19 @@ int BrokerUtcOffsetHoursNow()
    return (int)MathRound((double)offsetSeconds / 3600.0);
 }
 
+datetime SessionReferenceTime(const datetime whenTime)
+{
+   if(InpSessionTimeMode == SESSION_TIME_BROKER)
+      return whenTime;
+
+   const int brokerUtcOffset = BrokerUtcOffsetHoursNow();
+   datetime refTime = whenTime - (brokerUtcOffset * 3600);
+   if(InpSessionTimeMode == SESSION_TIME_WIB)
+      refTime += 7 * 3600;
+
+   return refTime;
+}
+
 string SessionTimeModeLabel()
 {
    if(InpSessionTimeMode == SESSION_TIME_UTC)
@@ -301,17 +315,38 @@ string SessionTimeModeLabel()
 
 int SessionReferenceHour(const datetime whenTime)
 {
-   const int brokerHour = BrokerHour(whenTime);
-   if(InpSessionTimeMode == SESSION_TIME_BROKER)
-      return brokerHour;
+   return BrokerHour(SessionReferenceTime(whenTime));
+}
 
-   const int brokerUtcOffset = BrokerUtcOffsetHoursNow();
-   const int utcHour = NormalizeHour(brokerHour - brokerUtcOffset);
-   if(InpSessionTimeMode == SESSION_TIME_UTC)
-      return utcHour;
+int SessionReferenceDateKey(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(SessionReferenceTime(whenTime), dt);
+   return dt.year * 10000 + dt.mon * 100 + dt.day;
+}
 
-   // WIB is UTC+7.
-   return NormalizeHour(utcHour + 7);
+string FloatingDDRestartTimeModeLabel()
+{
+   if(InpUseTimeFilter)
+      return SessionTimeModeLabel();
+   return "BROKER";
+}
+
+int FloatingDDRestartReferenceHour(const datetime whenTime)
+{
+   if(InpUseTimeFilter)
+      return SessionReferenceHour(whenTime);
+   return BrokerHour(whenTime);
+}
+
+int FloatingDDRestartReferenceDateKey(const datetime whenTime)
+{
+   if(InpUseTimeFilter)
+      return SessionReferenceDateKey(whenTime);
+
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   return dt.year * 10000 + dt.mon * 100 + dt.day;
 }
 
 bool IsWithinFirstEntryWindow(const datetime whenTime)
@@ -914,6 +949,40 @@ void DeactivateCloseLock()
    g_closeLockWaitTradePrinted = false;
 }
 
+bool TryAutoRestartAfterFloatingDDStop(const int posCount)
+{
+   if(!g_stopTradingByFloatingSL)
+      return false;
+   if(posCount > 0)
+      return false;
+   if(g_floatingSLStopDateKey <= 0)
+      return false;
+
+   const datetime now = TimeCurrent();
+   const int nowDateKey = FloatingDDRestartReferenceDateKey(now);
+   const int nowHour = FloatingDDRestartReferenceHour(now);
+   if(nowDateKey <= g_floatingSLStopDateKey)
+      return false;
+   if(nowHour < InpStartHourBroker)
+      return false;
+   if(InpUseTimeFilter && !IsWithinFirstEntryWindow(now))
+      return false;
+
+   g_stopTradingByFloatingSL = false;
+   g_floatingSLStopDateKey = 0;
+   ResetTrailState();
+   DeactivateCloseLock();
+   g_maxPosWarnSent = false;
+   g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+
+   if(!IsTesterRun())
+      Print("Floating DD stop auto restart | ",
+            FloatingDDRestartTimeModeLabel(), " hour=", nowHour,
+            " | start_hour=", InpStartHourBroker);
+
+   return true;
+}
+
 bool ProcessCloseLock(const int posCount)
 {
    if(!InpUseCloseLock)
@@ -1425,15 +1494,22 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(InpUseTimeFilter)
+   if(InpUseTimeFilter || InpFloatingDDStopMoney > 0.0)
    {
-      if(InpStartHourBroker < 0 || InpStartHourBroker > 23 ||
-         InpPauseHourBroker < 0 || InpPauseHourBroker > 23)
+      if(InpStartHourBroker < 0 || InpStartHourBroker > 23)
       {
-         Print("Init fail | invalid session hour | start/pause must be 0..23");
+         Print("Init fail | invalid start hour | start must be 0..23");
          return INIT_FAILED;
       }
+   }
 
+   if(InpUseTimeFilter)
+   {
+      if(InpPauseHourBroker < 0 || InpPauseHourBroker > 23)
+      {
+         Print("Init fail | invalid pause hour | pause must be 0..23");
+         return INIT_FAILED;
+      }
       if(InpStartHourBroker >= InpPauseHourBroker)
       {
          Print("Init fail | session config invalid | need start_hour < pause_hour");
@@ -1506,6 +1582,7 @@ int OnInit()
    DeactivateCloseLock();
    g_maxPosWarnSent = false;
    g_stopTradingByFloatingSL = false;
+   g_floatingSLStopDateKey = 0;
    g_sessionPauseUntilStart = false;
    g_lastAlgoTradingEnabled = IsAlgoTradingEnabled();
    g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
@@ -1564,6 +1641,7 @@ int OnInit()
             " | StartHour=", (string)InpStartHourBroker,
             " | PauseHour=", (string)InpPauseHourBroker,
             " | FloatingDDStop=", DoubleToString(InpFloatingDDStopMoney, 2),
+            " | FloatingDDRestartTime=", FloatingDDRestartTimeModeLabel(),
             " | BasketTrail=", (InpUseBasketTrail ? "true" : "false"),
             " | TrailStart=", DoubleToString(InpTrailStartMoney, 2),
             " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
@@ -1707,24 +1785,31 @@ void OnTick()
 
    if(g_stopTradingByFloatingSL)
    {
-      if(posCount > 0)
+      if(TryAutoRestartAfterFloatingDDStop(posCount))
       {
-         if(InpUseCloseLock)
-         {
-            ActivateCloseLock("floating_dd_stop");
-            return;
-         }
-         else
-         {
-            if(!IsTradeAllowed())
-               return;
-
-            const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
-            if(remain == 0)
-               ResetTrailState();
-         }
+         UpdateSessionPauseState(posCount);
       }
-      return;
+      else
+      {
+         if(posCount > 0)
+         {
+            if(InpUseCloseLock)
+            {
+               ActivateCloseLock("floating_dd_stop");
+               return;
+            }
+            else
+            {
+               if(!IsTradeAllowed())
+                  return;
+
+               const int remain = CloseAllBuyPositionsWithRetries(g_symbol, InpMagic, InpCloseAttemptsPerRun);
+               if(remain == 0)
+                  ResetTrailState();
+            }
+         }
+         return;
+      }
    }
 
    if(g_maxPositions > 0 && posCount < g_maxPositions)
@@ -1736,6 +1821,7 @@ void OnTick()
       if(InpFloatingDDStopMoney > 0.0 && profit <= -InpFloatingDDStopMoney)
       {
          g_stopTradingByFloatingSL = true;
+         g_floatingSLStopDateKey = FloatingDDRestartReferenceDateKey(TimeCurrent());
 
          const string msg =
             "Floating DD Stop Triggered\n" +
@@ -1743,7 +1829,9 @@ void OnTick()
             "Sym: " + g_symbol + "\n" +
             "Floating: " + DoubleToString(profit, 2) + "\n" +
             "Limit: -" + DoubleToString(InpFloatingDDStopMoney, 2) + "\n" +
-            "Action: close all + stop trading (manual restart from MT5)";
+            "Action: close all + stop trading" +
+            " (auto restart next day at " + FloatingDDRestartTimeModeLabel() +
+            " hour " + (string)InpStartHourBroker + ")";
 
          if(InpNotifyFloatingSLStop)
             SendTelegramMessage(msg);
