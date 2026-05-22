@@ -51,6 +51,7 @@ input int    InpCloseAttemptsPerRun     = 1;      // Max close-all retries in on
 input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (ms, 0=off)
 input double InpMaxSpreadFirstEntryPips = 50;      // Max spread for first entry in pips (0=disabled)
 input double InpMaxSpreadGridEntryPips  = 200;      // Max spread for grid entry in pips (0=disabled)
+input bool   InpGridEntryOnCandleClose  = false;  // Grid entry only after closed candle reaches grid distance
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = false;   // Enable trading session filter
@@ -133,6 +134,7 @@ datetime g_lastActiveNotifyAttemptTime = 0;
 string g_dailyStatsFile = "";
 bool   g_lastAlgoTradingEnabled = true;
 datetime g_lastFirstEntryBarTime = 0;
+datetime g_lastGridEntryCloseBarTime = 0;
 int    g_lastKnownPosCount = 0;
 
 string CleanRelativeFolder(const string folder)
@@ -431,6 +433,50 @@ bool IsNewBarForFirstEntry()
 
    g_lastFirstEntryBarTime = barTime;
    return true;
+}
+
+bool IsGridDistanceReached(const double latestPrice,
+                           const double gridPrice,
+                           const double buyReferencePrice,
+                           const double sellReferencePrice,
+                           const bool includeEqual)
+{
+   if(includeEqual)
+   {
+      return (IsSellMode()
+              ? (sellReferencePrice >= (latestPrice + gridPrice))
+              : (buyReferencePrice <= (latestPrice - gridPrice)));
+   }
+
+   return (IsSellMode()
+           ? (sellReferencePrice > (latestPrice + gridPrice))
+           : (buyReferencePrice < (latestPrice - gridPrice)));
+}
+
+bool IsGridEntrySignalNow(const double latestPrice,
+                          const double gridPrice,
+                          datetime &closedBarTime)
+{
+   closedBarTime = 0;
+
+   if(!InpGridEntryOnCandleClose)
+   {
+      const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
+      const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
+      return IsGridDistanceReached(latestPrice, gridPrice, bid, ask, false);
+   }
+
+   closedBarTime = iTime(g_symbol, PERIOD_CURRENT, 1);
+   if(closedBarTime <= 0)
+      return false;
+   if(closedBarTime == g_lastGridEntryCloseBarTime)
+      return false;
+
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, 1);
+   if(closePrice <= 0.0)
+      return false;
+
+   return IsGridDistanceReached(latestPrice, gridPrice, closePrice, closePrice, true);
 }
 
 double PipPoint(const string symbol)
@@ -1630,7 +1676,8 @@ int OnInit()
             " | CloseAttempts=", (string)InpCloseAttemptsPerRun,
             " | CloseLockTimerMs=", (string)InpCloseLockTimerMs,
             " | MaxSpreadFirst=", DoubleToString(InpMaxSpreadFirstEntryPips, 1),
-            " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1));
+            " | MaxSpreadGrid=", DoubleToString(InpMaxSpreadGridEntryPips, 1),
+            " | GridEntryOnCandleClose=", (InpGridEntryOnCandleClose ? "true" : "false"));
 
       if(InpFirstEntryOnNextCandleOpen && HasAnyFirstEntrySignalFilter())
          Print("Info | first_entry_on_next_candle_open=IGNORED | reason=first_entry_signal_filter_enabled");
@@ -1771,6 +1818,7 @@ void OnTick()
    {
       ResetTrailState();
       DeactivateCloseLock();
+      g_lastGridEntryCloseBarTime = 0;
       g_maxPosWarnSent = false;
    }
 
@@ -2013,11 +2061,8 @@ void OnTick()
    const double latest_price = snapshot.latestPrice;
 
    const double gridPrice = gridPoints * PipPoint(g_symbol);
-   const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
-   const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
-   const bool shouldOpenGrid = (IsSellMode()
-                                ? (ask > (latest_price + gridPrice))
-                                : (bid < (latest_price - gridPrice)));
+   datetime gridSignalClosedBarTime = 0;
+   const bool shouldOpenGrid = IsGridEntrySignalNow(latest_price, gridPrice, gridSignalClosedBarTime);
    if(shouldOpenGrid)
    {
       if(!IsGridEntryAllowedNow(posCount))
@@ -2031,7 +2076,12 @@ void OnTick()
                " | side=", ActiveSideLabel(),
                " | lot=", DoubleToString(lot, 2),
                " | gridPoints=", DoubleToString(gridPoints, 1),
-               " | tpMoney=", DoubleToString(tpMoney, 2));
-      OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy"));
+               " | tpMoney=", DoubleToString(tpMoney, 2),
+               " | trigger=", (InpGridEntryOnCandleClose ? "candle_close" : "live_price"));
+      if(OpenBuy(g_symbol, lot, (IsSellMode() ? "TableGridSell" : "TableGridBuy")) &&
+         InpGridEntryOnCandleClose)
+      {
+         g_lastGridEntryCloseBarTime = gridSignalClosedBarTime;
+      }
    }
 }

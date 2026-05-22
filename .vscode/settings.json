@@ -4,6 +4,10 @@
     "*.mq5": "plaintext",
     "*.mqh": "plaintext"
   },
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
   "python-envs.pythonProjects": [
     {
       "path": ".",
