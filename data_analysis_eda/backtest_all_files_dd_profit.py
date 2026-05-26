@@ -24,7 +24,7 @@ INPUT_FOLDER = Path(r"/Drive/E/mt5")
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
 # INPUT_PATTERN = "ea_npbot*.csv"
 # INPUT_PATTERN = "ea_profit_sakti*.csv"
-INPUT_PATTERN = "2020_*.csv"
+INPUT_PATTERN = "202509_pd*.csv"
 INPUT_FILES: list[Path] = []
 
 WEEKDAYS_ONLY = True

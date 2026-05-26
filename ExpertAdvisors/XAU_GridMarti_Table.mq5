@@ -36,7 +36,7 @@ input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_900.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
+input string InpTableFile               = "T1_1500.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -75,14 +75,14 @@ input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
 input double InpTrailStartMoney         = 100.0;   // Mode switch: table TP <= value => fixed TP, table TP > value => start trailing after profit reaches table TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
-input double InpFloatingDDStopMoney     = 3000.0;  // Close all + stop trading when floating drawdown >= value (0=off)
+input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 
 input group "Telegram Alerts"
 input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk"; // Telegram bot token
 input string InpTelegramChatId          = "1448627275"; // Telegram chat id
 input bool   InpNotifyFloatingSLStop    = true;    // Send Telegram alert when floating SL stop is triggered
-input bool   InpNotifyEaActive          = true;    // Send periodic Telegram message that EA is active
-input int    InpEaActiveIntervalMinutes = 10;      // Periodic active message interval in minutes
+input bool   InpNotifyEaActive          = false;    // Send periodic Telegram message that EA is active
+input int    InpEaActiveIntervalMinutes = 15;      // Periodic active message interval in minutes
 
 input group "Daily Stats"
 input bool   InpEnableDailyStats        = false;    // Track and save daily profit + max DD for this EA (symbol+magic)
