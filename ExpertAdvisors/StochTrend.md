@@ -35,7 +35,7 @@ Jika EMA 50 berada di bawah EMA 200, kondisi pasar dianggap cenderung turun. Dal
 
 Filter EMA dan Stochastic dapat dimatikan sementara untuk testing algoritma. Jika EMA Trend Filter dimatikan, EA tidak memakai arah EMA 50/200 sebagai syarat first entry. Jika Stochastic Filter dimatikan, EA tidak menunggu crossing Stochastic sebagai syarat first entry.
 
-Jika kedua filter dimatikan, gunakan mode **Buy only** atau **Sell only** untuk testing first entry. Pada mode **Both Single Trade**, EA tidak membuka first entry jika EMA dan Stochastic sama-sama dimatikan karena arah entry tidak dapat ditentukan.
+Jika kedua filter dimatikan, EA tidak membuka first entry pada mode apa pun karena arah entry tidak dapat ditentukan.
 
 Moving Average Type dapat dipilih oleh user:
 
@@ -109,33 +109,26 @@ Model ini membantu mencegah EA membuka posisi berlawanan arah secara bersamaan.
 
 ## Money Management
 
-EA menggunakan fixed lot yang diatur langsung oleh user.
+EA menggunakan lot table yang diatur langsung oleh user.
 
 Default awal:
 
 ```text
-Initial Lot = 0.10
+Lot Table = 0.10;0.20;0.20;0.30;0.40;0.60;0.80;1.00
 ```
 
-Lot awal ini dipakai untuk first entry. Jika martingale grid aktif, lot layer berikutnya dihitung dari lot sebelumnya menggunakan lot multiplier.
-
-Default martingale:
-
-```text
-Lot Multiplier = 2.0
-Max Grid Layer = 4
-```
+Layer pertama pada Lot Table dipakai untuk first entry. Layer berikutnya dipakai untuk martingale grid.
 
 Contoh:
 
 ```text
 Layer 1 = 0.10 lot
 Layer 2 = 0.20 lot
-Layer 3 = 0.40 lot
-Layer 4 = 0.80 lot
+Layer 3 = 0.20 lot
+Layer 4 = 0.30 lot
 ```
 
-Max Grid Layer membatasi jumlah total layer dalam satu basket, termasuk first entry, agar EA tidak terus menambah posisi tanpa batas.
+Max Grid Layer tidak memakai input terpisah. Jumlah maksimal layer otomatis mengikuti jumlah lot di Lot Table. Jika user ingin menambah kapasitas layer, user cukup menambahkan lot baru pada Lot Table lalu apply ulang setting EA.
 
 ## Konsep Jarak untuk XAU
 
@@ -218,14 +211,14 @@ Layer 2 BUY    = 2342.00
 Layer 3 BUY    = 2334.00
 ```
 
-Jika harga turun dari first entry, EA membuka posisi BUY tambahan pada jarak grid berikutnya. Lot pada layer berikutnya dapat dibuat lebih besar menggunakan lot multiplier.
+Jika harga turun dari first entry, EA membuka posisi BUY tambahan pada jarak grid berikutnya. Lot pada layer berikutnya diambil dari Lot Table.
 
 Contoh:
 
 ```text
 Layer 1 = 0.10 lot
 Layer 2 = 0.20 lot
-Layer 3 = 0.40 lot
+Layer 3 = 0.20 lot
 ```
 
 Tujuannya adalah memperbaiki average price, sehingga EA tidak harus menunggu harga kembali ke titik entry pertama untuk keluar profit. Semua posisi dalam rangkaian ini dihitung sebagai satu basket.
@@ -235,41 +228,70 @@ Untuk SELL, konsepnya sama tetapi arah grid berlawanan. Jika first entry SELL da
 Aturan penting untuk martingale grid:
 
 1. **Grid Distance** menentukan jarak harga antar layer.
-2. **Lot Multiplier** menentukan pembesaran lot setiap layer.
-3. **Max Grid Layer** membatasi jumlah total layer dalam satu basket, termasuk first entry.
-4. **Basket TP Distance** menutup semua posisi ketika profit basket sudah setara dengan target jarak harga dari initial lot.
+2. **Lot Table** menentukan lot untuk setiap layer.
+3. **Max Grid Layer** otomatis mengikuti jumlah item pada Lot Table.
+4. **Basket TP Price Move** menutup semua posisi ketika profit basket sudah setara dengan target jarak harga dari initial lot.
 5. **Max Drawdown** membatasi kerugian maksimal agar EA tidak terus menambah posisi tanpa batas.
 
-Layer berikutnya hanya boleh dibuka jika harga sudah melewati level grid berikutnya dan belum ada layer pada level tersebut. Aturan ini mencegah EA membuka layer dobel pada level harga yang sama.
+Layer berikutnya hanya boleh dibuka jika harga sudah melewati level grid berikutnya dan masih ada lot berikutnya pada Lot Table. EA hanya membuka satu layer tambahan per evaluasi, sehingga jika harga sudah bergerak terlalu jauh lalu user menambah Lot Table, EA tidak langsung membuka banyak layer sekaligus.
 
 ## Basket Take Profit dan Close All
 
-Take profit utama menggunakan target uang dinamis yang dihitung dari initial lot dan Basket TP Distance.
+Take profit utama menggunakan target uang dinamis yang dihitung dari initial lot dan Basket TP Price Move.
 
 Default awal:
 
 ```text
-Basket TP Distance = 1.00
+Basket TP Mode = Base Lot
+Basket TP Price Move = 1.00
 XAU Money Per Price Unit = 100.00
 ```
 
-Rumus target basket:
+Basket TP Mode memiliki dua pilihan:
+
+1. **Base Lot**
+
+   Target TP dihitung dari lot layer pertama pada Lot Table. Layer martingale tidak memperbesar target TP, sehingga basket lebih mudah keluar saat recovery.
+
+   ```text
+   Basket TP Money = Lot Table Layer 1 x Money Per Price Unit Per Lot x Basket TP Price Move
+   ```
+
+2. **Total Lot**
+
+   Target TP dihitung dari total lot basket aktif. Mode ini lebih murni sebagai konsep jarak dari titik floating `0`, karena target uang ikut membesar sesuai total exposure basket.
+
+   ```text
+   Basket TP Money = Total Lot Basket x Money Per Price Unit Per Lot x Basket TP Price Move
+   ```
+
+Default awal menggunakan **Base Lot**.
+
+Contoh Base Lot:
 
 ```text
-Basket TP Money = Initial Lot x Money Per Price Unit Per Lot x Basket TP Distance
+Lot Table Layer 1 = 0.10
+Basket TP Price Move = 1.00
+Target Basket = 10.00 USD
 ```
 
-Untuk XAU, jika `Initial Lot = 0.10` dan `Basket TP Distance = 1.00`, target basket kira-kira menjadi `10.00 USD`.
-
-Contoh target XAU untuk `Basket TP Distance = 1.00`:
+Contoh Total Lot:
 
 ```text
-Initial Lot 0.01 = 1.00 USD
-Initial Lot 0.10 = 10.00 USD
-Initial Lot 1.00 = 100.00 USD
+Total Lot Basket = 0.80
+Basket TP Price Move = 1.00
+Target Basket = 80.00 USD
 ```
 
-Target ini tetap memakai initial lot, bukan total lot basket. Jadi ketika layer martingale bertambah, target take profit tidak ikut membesar. Tujuannya agar basket lebih mudah keluar saat recovery.
+Contoh target XAU untuk `Basket TP Price Move = 1.00`:
+
+```text
+Lot Table Layer 1 = 0.01 -> 1.00 USD
+Lot Table Layer 1 = 0.10 -> 10.00 USD
+Lot Table Layer 1 = 1.00 -> 100.00 USD
+```
+
+Pada mode Base Lot, target tetap memakai lot layer pertama, bukan total lot basket. Jadi ketika layer martingale bertambah, target take profit tidak ikut membesar. Tujuannya agar basket lebih mudah keluar saat recovery.
 
 Aturan close all:
 
@@ -278,7 +300,7 @@ Aturan close all:
 3. Jika basket SELL mencapai target, semua posisi SELL dalam basket ditutup.
 4. Setelah semua posisi basket close, EA boleh mencari first entry baru jika waktu dan filter lain mengizinkan.
 
-Close all menggunakan **Close Lock**. Artinya, ketika Basket TP Distance atau Max Drawdown terkena, EA masuk mode khusus untuk menutup semua posisi dalam basket sampai benar-benar habis.
+Close all menggunakan **Close Lock**. Artinya, ketika Basket TP Price Move atau Max Drawdown terkena, EA masuk mode khusus untuk menutup semua posisi dalam basket sampai benar-benar habis.
 
 Default awal:
 
@@ -297,9 +319,9 @@ Jika sebagian posisi gagal close karena requote, slippage, atau trade context, C
 
 ## Max Grid dan Max Drawdown
 
-Jika jumlah layer sudah mencapai Max Grid Layer, EA tidak membuka layer tambahan lagi. Basket tetap dikelola sampai salah satu kondisi berikut terjadi:
+Jika jumlah layer sudah mencapai jumlah item Lot Table, EA tidak membuka layer tambahan lagi. Basket tetap dikelola sampai salah satu kondisi berikut terjadi:
 
-1. Basket mencapai target profit dari Basket TP Distance, lalu semua posisi ditutup.
+1. Basket mencapai target profit dari Basket TP Price Move, lalu semua posisi ditutup.
 2. Floating loss basket mencapai Max Drawdown, lalu EA melakukan cut loss.
 
 Max Drawdown dihitung berdasarkan floating loss per basket dalam nominal uang.
@@ -308,25 +330,26 @@ Default awal:
 
 ```text
 Max Drawdown = 3000.00 USD
+Max DD Resume Mode = Continue Trading
 ```
 
-Jika floating loss basket menyentuh Max Drawdown, EA menutup semua posisi dalam basket tersebut dan masuk ke mode pause.
+Jika floating loss basket menyentuh Max Drawdown, EA menutup semua posisi dalam basket tersebut. Setelah itu, perilaku EA mengikuti Max DD Resume Mode.
 
 Setelah Max Drawdown terkena, ada dua pilihan perilaku:
 
-1. **Stop and Resume Next Day**
+1. **Continue Trading**
 
-   EA berhenti trading setelah cut loss dan otomatis aktif kembali pada hari trading berikutnya.
+   EA menutup basket yang terkena Max DD, lalu tetap lanjut mencari first entry baru jika filter lain mengizinkan. Ini menjadi default awal.
 
-2. **Stop Until Manual Resume**
+2. **Pause Until Manual Resume**
 
-   EA berhenti trading setelah cut loss sampai user mengaktifkan kembali EA secara manual.
+   EA berhenti trading setelah cut loss sampai user mengaktifkan kembali EA secara manual. Ini cocok kalau ingin evaluasi dulu sebelum EA lanjut lagi.
 
 Dengan aturan ini, Max Drawdown menjadi batas cut loss utama untuk basket yang gagal recovery.
 
 ## Spread Filter dan TP Kecil
 
-Karena EA ini dapat menggunakan Basket TP Distance kecil, misalnya sekitar `1.00`, spread broker harus diperhatikan. Pada XAU, spread bisa cukup besar dan dapat memakan sebagian target profit.
+Karena EA ini dapat menggunakan Basket TP Price Move kecil, misalnya sekitar `1.00`, spread broker harus diperhatikan. Pada XAU, spread bisa cukup besar dan dapat memakan sebagian target profit.
 
 EA perlu memiliki **Max Spread Filter** agar tidak membuka posisi saat spread terlalu tinggi.
 
@@ -427,22 +450,22 @@ Di luar jam pause tersebut, EA boleh mencari sinyal first entry selama semua fil
 
 ## Sinyal BUY
 
-Sinyal BUY muncul ketika tren sedang naik, lalu Stochastic sempat turun ke area oversold di bawah level 20.
+Sinyal BUY muncul ketika tren sedang naik, lalu Stochastic sempat masuk ke area oversold di bawah level 20.
 
-Setelah itu, EA menunggu garis Main Stochastic memotong ke atas garis Signal. Entry hanya dicek saat candle baru terbentuk, sehingga crossing yang dipakai adalah crossing dari candle yang sudah tertutup.
+Setelah itu, EA menunggu garis Main Stochastic memotong ke atas garis Signal. Crossing boleh terjadi setelah Stochastic keluar kembali dari area oversold, selama sebelumnya area tersebut memang sudah tersentuh.
 
 Dengan cara ini, EA mencoba masuk saat harga mulai memantul kembali searah tren naik.
 
 ## Sinyal SELL
 
-Sinyal SELL muncul ketika tren sedang turun, lalu Stochastic sempat naik ke area overbought di atas level 80.
+Sinyal SELL muncul ketika tren sedang turun, lalu Stochastic sempat masuk ke area overbought di atas level 80.
 
-Setelah itu, EA menunggu garis Main Stochastic memotong ke bawah garis Signal. Entry hanya dicek saat candle baru terbentuk, sehingga crossing yang dipakai adalah crossing dari candle yang sudah tertutup.
+Setelah itu, EA menunggu garis Main Stochastic memotong ke bawah garis Signal. Crossing boleh terjadi setelah Stochastic turun kembali dari area overbought, selama sebelumnya area tersebut memang sudah tersentuh.
 
 Dengan cara ini, EA mencoba masuk saat harga mulai turun kembali searah tren utama.
 
 ## Catatan
 
-Logika ini membantu mengurangi entry yang terlalu cepat, karena EA tidak hanya melihat level Stochastic, tetapi juga menunggu crossing yang sudah terkonfirmasi.
+Logika ini membantu mengurangi entry yang terlalu cepat, karena EA tidak hanya melihat level Stochastic, tetapi juga menunggu zona ekstrem tersentuh lebih dulu lalu crossing terkonfirmasi sesudahnya.
 
 Kelemahannya, sinyal bisa sedikit terlambat karena EA menunggu candle tertutup terlebih dahulu. Namun, konfirmasi ini dapat membantu menghindari sinyal palsu yang muncul saat candle masih berjalan.

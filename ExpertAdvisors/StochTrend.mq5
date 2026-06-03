@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.02"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -31,16 +31,21 @@ enum ETimeMode
 
 enum EMaxDdResumeMode
 {
-   MAX_DD_RESUME_NEXT_DAY = 0,
-   MAX_DD_MANUAL_RESUME = 1
+   MAX_DD_CONTINUE_TRADING = 0,
+   MAX_DD_PAUSE_MANUAL = 1
+};
+
+enum EBasketTpMode
+{
+   BASKET_TP_BASE_LOT = 0,
+   BASKET_TP_TOTAL_LOT = 1
 };
 
 input group "General"
 input bool   InpOnlyXauusd             = true;
-input ETradeMode InpTradeMode          = TRADE_BOTH_SINGLE;
+input ETradeMode InpTradeMode          = TRADE_BUY_ONLY;
 input long   InpBuyMagic               = 111111;
 input long   InpSellMagic              = 222222;
-input double InpInitialLot             = 0.10; //0.1,0.2,0.2,0.3,0.4,0.6,0.8,1
 input double InpMaxSpread              = 0.40;  // Price distance XAU
 input double InpMaxSlippage            = 0.30;  // Price distance XAU
 input bool   InpUseCloseLock           = true;
@@ -65,18 +70,18 @@ input double InpOverbought             = 80.0;
 input double InpOversold               = 20.0;
 
 input group "Grid Martingale"
+input string InpLotTable               = "0.10;0.20;0.30;0.40";
 input double InpGridDistance           = 8.00;  // Price distance XAU
-input double InpLotMultiplier          = 2.0;
-input int    InpMaxGridLayer           = 4;     // Total layers including first entry
-input double InpBasketTpDistance       = 1.00;  // Dynamic money target from initial lot
+input EBasketTpMode InpBasketTpMode    = BASKET_TP_BASE_LOT;
+input double InpBasketTpPriceMove       = 1.00;  // Dynamic money target from initial lot
 input double InpXauMoneyPerPriceUnit   = 100.0; // 1 lot profit for XAU move 1.00
 input double InpMaxDrawdownMoney       = 3000.00;
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_RESUME_NEXT_DAY;
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
 
 input group "Manual Time Filter"
-input bool   InpUseTimeFilter          = false;
+input bool   InpUseTimeFilter          = true;
 input ETimeMode InpTimeMode            = TIME_MODE_WIB;
-input string InpPauseWindows           = "03:30-08:30;11:50-13:00;16:50-23:59";
+input string InpPauseWindows           = "06:00-08:00;18:00-22:00";
 
 CTrade trade;
 string g_symbol = "";
@@ -85,12 +90,12 @@ int g_fastMaHandle = INVALID_HANDLE;
 int g_slowMaHandle = INVALID_HANDLE;
 int g_stochHandle = INVALID_HANDLE;
 bool g_pausedByMaxDd = false;
-int g_maxDdDateKey = 0;
 bool g_closeLockActive = false;
 long g_closeLockMagic = 0;
 ENUM_POSITION_TYPE g_closeLockType = POSITION_TYPE_BUY;
 bool g_closeLockPauseAfterClose = false;
 int g_closeLockLastRemain = -1;
+double g_lotTable[];
 
 ENUM_MA_METHOD MaMethod()
 {
@@ -129,6 +134,41 @@ double NormalizeVolume(const string symbol, const double lot)
    if(vol < vmin) vol = vmin;
 
    return NormalizeDouble(vol, 2);
+}
+
+bool ParseLotTable()
+{
+   ArrayResize(g_lotTable, 0);
+
+   string table = InpLotTable;
+   StringTrimLeft(table);
+   StringTrimRight(table);
+   if(StringLen(table) <= 0)
+      return false;
+
+   string cells[];
+   const int count = StringSplit(table, ';', cells);
+   if(count <= 0)
+      return false;
+
+   for(int i = 0; i < count; i++)
+   {
+      string cell = cells[i];
+      StringTrimLeft(cell);
+      StringTrimRight(cell);
+      if(StringLen(cell) <= 0)
+         return false;
+
+      const double lot = StringToDouble(cell);
+      if(lot <= 0.0)
+         return false;
+
+      const int n = ArraySize(g_lotTable) + 1;
+      ArrayResize(g_lotTable, n);
+      g_lotTable[n - 1] = NormalizeVolume(g_symbol, lot);
+   }
+
+   return (ArraySize(g_lotTable) > 0);
 }
 
 ulong DeviationPointsFromPriceDistance(const string symbol, const double priceDistance)
@@ -175,13 +215,6 @@ void ReferenceTimeStruct(const datetime whenTime, MqlDateTime &dt)
          refTime += 7 * 3600;
    }
    TimeToStruct(refTime, dt);
-}
-
-int ReferenceDateKey(const datetime whenTime)
-{
-   MqlDateTime dt;
-   ReferenceTimeStruct(whenTime, dt);
-   return dt.year * 10000 + dt.mon * 100 + dt.day;
 }
 
 int MinutesOfDay(const datetime whenTime)
@@ -269,23 +302,7 @@ bool IsFirstEntryPausedByTime()
 
 bool TryResumeAfterMaxDd()
 {
-   if(!g_pausedByMaxDd)
-      return true;
-
-   if(InpMaxDdResumeMode == MAX_DD_MANUAL_RESUME)
-      return false;
-
-   const int today = ReferenceDateKey(TimeCurrent());
-   if(today <= g_maxDdDateKey)
-      return false;
-
-   if(IsFirstEntryPausedByTime())
-      return false;
-
-   g_pausedByMaxDd = false;
-   g_maxDdDateKey = 0;
-   Print("StochTrend resumed after Max DD pause.");
-   return true;
+   return (!g_pausedByMaxDd);
 }
 
 bool IsNewBar()
@@ -347,6 +364,16 @@ int CountAllManagedPositions()
    return CountPositions(InpBuyMagic, POSITION_TYPE_BUY) + CountPositions(InpSellMagic, POSITION_TYPE_SELL);
 }
 
+int CountFirstEntryPositionsForCurrentMode()
+{
+   if(InpTradeMode == TRADE_BUY_ONLY)
+      return CountPositions(InpBuyMagic, POSITION_TYPE_BUY);
+   if(InpTradeMode == TRADE_SELL_ONLY)
+      return CountPositions(InpSellMagic, POSITION_TYPE_SELL);
+
+   return CountAllManagedPositions();
+}
+
 double BasketProfit(const long magic, const ENUM_POSITION_TYPE type)
 {
    double profit = 0.0;
@@ -361,6 +388,21 @@ double BasketProfit(const long magic, const ENUM_POSITION_TYPE type)
       profit += PositionGetDouble(POSITION_SWAP);
    }
    return profit;
+}
+
+double BasketTotalVolume(const long magic, const ENUM_POSITION_TYPE type)
+{
+   double totalVolume = 0.0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != type) continue;
+      totalVolume += PositionGetDouble(POSITION_VOLUME);
+   }
+   return totalVolume;
 }
 
 double MoneyPerPriceUnitPerLot(const string symbol)
@@ -382,19 +424,25 @@ double MoneyPerPriceUnitPerLot(const string symbol)
    return 0.0;
 }
 
-double BasketTpMoneyTarget()
+double BasketTpMoneyTarget(const long magic, const ENUM_POSITION_TYPE type)
 {
    const double moneyPerPriceUnit = MoneyPerPriceUnitPerLot(g_symbol);
-   if(moneyPerPriceUnit <= 0.0 || InpInitialLot <= 0.0 || InpBasketTpDistance <= 0.0)
+   if(moneyPerPriceUnit <= 0.0 || InpBasketTpPriceMove <= 0.0 || ArraySize(g_lotTable) <= 0)
       return 0.0;
 
-   const double initialLot = NormalizeVolume(g_symbol, InpInitialLot);
-   return initialLot * moneyPerPriceUnit * InpBasketTpDistance;
+   double basisLot = g_lotTable[0];
+   if(InpBasketTpMode == BASKET_TP_TOTAL_LOT)
+      basisLot = BasketTotalVolume(magic, type);
+
+   if(basisLot <= 0.0)
+      return 0.0;
+
+   return basisLot * moneyPerPriceUnit * InpBasketTpPriceMove;
 }
 
 bool BasketTpHit(const long magic, const ENUM_POSITION_TYPE type)
 {
-   const double targetMoney = BasketTpMoneyTarget();
+   const double targetMoney = BasketTpMoneyTarget(magic, type);
    if(targetMoney <= 0.0)
       return false;
 
@@ -569,10 +617,7 @@ bool ProcessCloseLock()
    if(remain <= 0)
    {
       if(g_closeLockPauseAfterClose)
-      {
          g_pausedByMaxDd = true;
-         g_maxDdDateKey = ReferenceDateKey(TimeCurrent());
-      }
       Print("Close lock OFF | all positions closed");
       ResetCloseLock();
       return true;
@@ -585,10 +630,7 @@ bool ProcessCloseLock()
    if(remain <= 0)
    {
       if(g_closeLockPauseAfterClose)
-      {
          g_pausedByMaxDd = true;
-         g_maxDdDateKey = ReferenceDateKey(TimeCurrent());
-      }
       Print("Close lock OFF | all positions closed");
       ResetCloseLock();
    }
@@ -630,7 +672,6 @@ void CloseBasket(const long magic, const ENUM_POSITION_TYPE type, const string r
    if(pauseAfterClose)
    {
       g_pausedByMaxDd = true;
-      g_maxDdDateKey = ReferenceDateKey(TimeCurrent());
    }
 }
 
@@ -638,6 +679,7 @@ bool GridAnchorPrice(const long magic, const ENUM_POSITION_TYPE type, double &pr
 {
    bool found = false;
    price = 0.0;
+   datetime latestTime = 0;
 
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -648,28 +690,28 @@ bool GridAnchorPrice(const long magic, const ENUM_POSITION_TYPE type, double &pr
       if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) != type) continue;
 
       const double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      const datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
       if(openPrice <= 0.0) continue;
 
-      if(!found)
+      if(!found || openTime > latestTime)
       {
          found = true;
+         latestTime = openTime;
          price = openPrice;
       }
-      else if(type == POSITION_TYPE_BUY && openPrice < price)
-         price = openPrice;
-      else if(type == POSITION_TYPE_SELL && openPrice > price)
-         price = openPrice;
    }
 
    return found;
 }
 
-double NextLot(const int currentLayerCount)
+bool GetLayerLot(const int layerIndex, double &lot)
 {
-   double lot = InpInitialLot;
-   for(int i = 0; i < currentLayerCount; i++)
-      lot *= InpLotMultiplier;
-   return NormalizeVolume(g_symbol, lot);
+   lot = 0.0;
+   if(layerIndex < 0 || layerIndex >= ArraySize(g_lotTable))
+      return false;
+
+   lot = g_lotTable[layerIndex];
+   return (lot > 0.0);
 }
 
 bool OpenMarket(const bool isBuy, const double lot, const string comment)
@@ -713,8 +755,9 @@ void ManageBasketRiskAndExit()
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
-         CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "max_dd", true);
-         Print("Max DD hit on BUY basket. Trading paused.");
+         const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
+         CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "max_dd", pauseAfterClose);
+         Print("Max DD hit on BUY basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
          return;
       }
    }
@@ -730,8 +773,9 @@ void ManageBasketRiskAndExit()
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
-         CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "max_dd", true);
-         Print("Max DD hit on SELL basket. Trading paused.");
+         const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
+         CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "max_dd", pauseAfterClose);
+         Print("Max DD hit on SELL basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
          return;
       }
    }
@@ -753,7 +797,8 @@ void ManageGrid()
 
    if(buyCount > 0)
    {
-      if(InpMaxGridLayer > 0 && buyCount >= InpMaxGridLayer)
+      double nextLot = 0.0;
+      if(!GetLayerLot(buyCount, nextLot))
          return;
 
       double anchorPrice = 0.0;
@@ -762,13 +807,14 @@ void ManageGrid()
 
       const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
       if(bid > 0.0 && bid <= anchorPrice - InpGridDistance)
-         OpenMarket(true, NextLot(buyCount), "StochTrendGridBuy");
+         OpenMarket(true, nextLot, "StochTrendGridBuy");
       return;
    }
 
    if(sellCount > 0)
    {
-      if(InpMaxGridLayer > 0 && sellCount >= InpMaxGridLayer)
+      double nextLot = 0.0;
+      if(!GetLayerLot(sellCount, nextLot))
          return;
 
       double anchorPrice = 0.0;
@@ -777,7 +823,7 @@ void ManageGrid()
 
       const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
       if(ask > 0.0 && ask >= anchorPrice + InpGridDistance)
-         OpenMarket(false, NextLot(sellCount), "StochTrendGridSell");
+         OpenMarket(false, nextLot, "StochTrendGridSell");
    }
 }
 
@@ -817,11 +863,15 @@ bool BuySignal()
    if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
    if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
 
+   const bool touchedOversold =
+      (main1 < InpOversold || signal1 < InpOversold ||
+       main2 < InpOversold || signal2 < InpOversold);
+
    if(main2 >= signal2)
       return false;
    if(main1 <= signal1)
       return false;
-   if(main1 >= InpOversold || signal1 >= InpOversold)
+   if(!touchedOversold)
       return false;
 
    return true;
@@ -863,11 +913,15 @@ bool SellSignal()
    if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
    if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
 
+   const bool touchedOverbought =
+      (main1 > InpOverbought || signal1 > InpOverbought ||
+       main2 > InpOverbought || signal2 > InpOverbought);
+
    if(main2 <= signal2)
       return false;
    if(main1 >= signal1)
       return false;
-   if(main1 <= InpOverbought || signal1 <= InpOverbought)
+   if(!touchedOverbought)
       return false;
 
    return true;
@@ -881,20 +935,24 @@ void CheckFirstEntryOnNewBar()
       return;
    if(!SpreadOK())
       return;
-   if(CountAllManagedPositions() > 0)
+   if(CountFirstEntryPositionsForCurrentMode() > 0)
       return;
 
-   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter && InpTradeMode == TRADE_BOTH_SINGLE)
+   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter)
+      return;
+
+   double firstLot = 0.0;
+   if(!GetLayerLot(0, firstLot))
       return;
 
    if(BuySignal())
    {
-      OpenMarket(true, InpInitialLot, "StochTrendFirstBuy");
+      OpenMarket(true, firstLot, "StochTrendFirstBuy");
       return;
    }
 
    if(SellSignal())
-      OpenMarket(false, InpInitialLot, "StochTrendFirstSell");
+      OpenMarket(false, firstLot, "StochTrendFirstSell");
 }
 
 int OnInit()
@@ -929,16 +987,20 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(InpInitialLot <= 0.0 || InpGridDistance <= 0.0 || InpLotMultiplier <= 0.0 || InpMaxGridLayer <= 0)
+   if(InpGridDistance <= 0.0)
    {
       Print("Invalid money management or grid input.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter)
+   if(!ParseLotTable())
    {
-      Print("Warning: EMA Trend Filter and Stochastic Filter are both disabled. Use Buy Only or Sell Only for entry testing, or no first entry will be opened in Both Single mode.");
+      Print("Invalid lot table. Use format like: 0.10;0.20;0.40;0.80");
+      return INIT_PARAMETERS_INCORRECT;
    }
+
+   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter)
+      Print("Warning: EMA Trend Filter and Stochastic Filter are both disabled. No first entry will be opened.");
 
    g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpFastMAPeriod, 0, MaMethod(), PRICE_CLOSE);
    g_slowMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpSlowMAPeriod, 0, MaMethod(), PRICE_CLOSE);
@@ -953,7 +1015,9 @@ int OnInit()
    Print("StochTrend initialized | symbol=", g_symbol,
          " | MA type=", (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA"),
          " | grid=", DoubleToString(InpGridDistance, 2),
-         " | basketTPDistance=", DoubleToString(InpBasketTpDistance, 2));
+         " | lotLayers=", (string)ArraySize(g_lotTable),
+         " | basketTPMode=", (InpBasketTpMode == BASKET_TP_TOTAL_LOT ? "TOTAL_LOT" : "BASE_LOT"),
+         " | basketTPPriceMove=", DoubleToString(InpBasketTpPriceMove, 2));
 
    if(InpUseCloseLock && InpCloseLockTimerMs > 0)
       EventSetMillisecondTimer(InpCloseLockTimerMs);
