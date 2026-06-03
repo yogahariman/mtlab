@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -54,6 +54,7 @@ input bool   InpUseAsyncClose          = true;
 input double InpCloseDeviation         = 0.30;  // Price distance XAU
 input int    InpCloseAttemptsPerRun    = 1;
 input int    InpCloseLockTimerMs       = 300;
+input int    InpMinSecondsBetweenOrders = 1;
 
 input group "Indicator"
 input bool   InpUseEmaTrendFilter      = true;
@@ -86,6 +87,7 @@ input string InpPauseWindows           = "06:00-08:00;18:00-22:00";
 CTrade trade;
 string g_symbol = "";
 datetime g_lastBarTime = 0;
+datetime g_lastTradeTime = 0;
 int g_fastMaHandle = INVALID_HANDLE;
 int g_slowMaHandle = INVALID_HANDLE;
 int g_stochHandle = INVALID_HANDLE;
@@ -719,6 +721,12 @@ bool OpenMarket(const bool isBuy, const double lot, const string comment)
    if(!IsTradeAllowed() || !SpreadOK())
       return false;
 
+   if(InpMinSecondsBetweenOrders > 0 && g_lastTradeTime > 0)
+   {
+      if((TimeCurrent() - g_lastTradeTime) < InpMinSecondsBetweenOrders)
+         return false;
+   }
+
    trade.SetExpertMagicNumber(isBuy ? InpBuyMagic : InpSellMagic);
    trade.SetDeviationInPoints(DeviationPointsFromPriceDistance(g_symbol, InpMaxSlippage));
 
@@ -739,6 +747,7 @@ bool OpenMarket(const bool isBuy, const double lot, const string comment)
    Print("Order opened | side=", (isBuy ? "BUY" : "SELL"),
          " | lot=", DoubleToString(volume, 2),
          " | comment=", comment);
+   g_lastTradeTime = TimeCurrent();
    return true;
 }
 
