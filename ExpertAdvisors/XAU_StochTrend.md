@@ -1,6 +1,6 @@
-# StochTrend
+# XAU_StochTrend
 
-StochTrend adalah konsep Expert Advisor (EA) yang menggunakan arah tren dari EMA dan sinyal crossing dari Stochastic Oscillator.
+XAU_StochTrend adalah konsep Expert Advisor (EA) yang menggunakan arah tren dari EMA dan sinyal crossing dari Stochastic Oscillator.
 
 Metode ini dibuat agar EA tidak langsung membuka posisi hanya karena Stochastic berada di area jenuh beli atau jenuh jual. EA tetap menunggu arah tren utama dan konfirmasi crossing sebelum melakukan entry.
 

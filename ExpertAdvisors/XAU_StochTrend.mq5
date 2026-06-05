@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//| StochTrend.mq5                                                   |
+//| XAU_StochTrend.mq5                                               |
 //| EMA trend + Stochastic crossing + XAU martingale grid basket      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.04"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -42,47 +42,51 @@ enum EBasketTpMode
 };
 
 input group "General"
-input bool   InpOnlyXauusd             = true;
-input ETradeMode InpTradeMode          = TRADE_BUY_ONLY;
-input long   InpBuyMagic               = 111111;
-input long   InpSellMagic              = 222222;
-input double InpMaxSpread              = 0.40;  // Price distance XAU
-input double InpMaxSlippage            = 0.30;  // Price distance XAU
-input bool   InpUseCloseLock           = true;
-input bool   InpUsePriorityCloseOrder  = true;
-input bool   InpUseAsyncClose          = true;
-input double InpCloseDeviation         = 0.30;  // Price distance XAU
-input int    InpCloseAttemptsPerRun    = 1;
-input int    InpCloseLockTimerMs       = 300;
-input int    InpMinSecondsBetweenOrders = 1;
+input ETradeMode InpTradeMode             = TRADE_BOTH_SINGLE;
+input long   InpBuyMagic                  = 111111;
+input long   InpSellMagic                 = 222222;
+input double InpMaxSpread                 = 0.40;  // Price distance XAU
+input double InpMaxSlippage               = 0.30;  // Price distance XAU
+input bool   InpUseCloseLock              = true;
+input bool   InpUsePriorityCloseOrder     = true;
+input bool   InpUseAsyncClose             = true;
+input double InpCloseDeviation            = 0.30;  // Price distance XAU
+input int    InpCloseAttemptsPerRun       = 1;
+input int    InpCloseLockTimerMs          = 300;
+input int    InpMinSecondsBetweenOrders   = 1;
 
 input group "Indicator"
-input bool   InpUseEmaTrendFilter      = true;
-input bool   InpUseStochasticFilter    = true;
-input bool   InpUsePriceEmaFilter      = false;
-input EMaType InpMovingAverageType     = MA_TYPE_EXPONENTIAL;
-input int    InpFastMAPeriod           = 50;
-input int    InpSlowMAPeriod           = 200;
-input double InpEmaMinDistance         = 1.50;  // Price distance XAU
-input int    InpKPeriod                = 5;
-input int    InpDPeriod                = 3;
-input int    InpSlowing                = 3;
-input double InpOverbought             = 80.0;
-input double InpOversold               = 20.0;
+input bool   InpUseEmaTrendFilter         = true;
+input bool   InpUseStochasticFilter       = true;
+input bool   InpUsePriceEmaFilter         = false;
+input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL;
+input int    InpFastMAPeriod              = 13;
+input int    InpSlowMAPeriod              = 233;
+input double InpEmaMinDistance            = 0.50;  // Price distance XAU
+input int    InpKPeriod                   = 5;
+input int    InpDPeriod                   = 3;
+input int    InpSlowing                   = 3;
+input double InpOverbought                = 80.0;
+input double InpOversold                  = 20.0;
 
 input group "Grid Martingale"
-input string InpLotTable               = "0.10;0.20;0.30;0.40";
-input double InpGridDistance           = 8.00;  // Price distance XAU
-input EBasketTpMode InpBasketTpMode    = BASKET_TP_BASE_LOT;
-input double InpBasketTpPriceMove       = 1.00;  // Dynamic money target from initial lot
-input double InpXauMoneyPerPriceUnit   = 100.0; // 1 lot profit for XAU move 1.00
-input double InpMaxDrawdownMoney       = 3000.00;
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
+input string InpLotTable                  = "0.10;0.20;0.30;0.40";
+input double InpGridDistance              = 8.00;  // Price distance XAU
+input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
+input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
+input double InpXauMoneyPerPriceUnit      = 100.0; // 1 lot profit for XAU move 1.00
+input double InpMaxDrawdownMoney          = 3000.00;
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_MANUAL;
+
+input group "Telegram Alerts"
+input bool   InpUseTelegramAlerts         = true;
+input string InpTelegramBotToken         = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";
+input string InpTelegramChatId           = "1448627275";
 
 input group "Manual Time Filter"
-input bool   InpUseTimeFilter          = true;
-input ETimeMode InpTimeMode            = TIME_MODE_WIB;
-input string InpPauseWindows           = "06:00-08:00;18:00-22:00";
+input bool   InpUseTimeFilter             = false;
+input ETimeMode InpTimeMode               = TIME_MODE_WIB;
+input string InpPauseWindows              = "03:00-06:00;18:45-21:00";
 
 CTrade trade;
 string g_symbol = "";
@@ -109,6 +113,11 @@ bool IsTradeAllowed()
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) return false;
    if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return false;
    return true;
+}
+
+bool IsTesterRun()
+{
+   return ((bool)MQLInfoInteger(MQL_TESTER) || (bool)MQLInfoInteger(MQL_OPTIMIZATION));
 }
 
 bool IsHedgingAccount()
@@ -199,6 +208,89 @@ bool SpreadOK()
       return false;
 
    return ((ask - bid) <= InpMaxSpread);
+}
+
+string UrlEncode(const string src)
+{
+   string out = "";
+   char bytes[];
+   const int copied = StringToCharArray(src, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   if(copied <= 1)
+      return out;
+
+   for(int i = 0; i < copied - 1; i++)
+   {
+      const int c = ((int)bytes[i]) & 0xFF;
+      const bool safe = ((c >= 'a' && c <= 'z') ||
+                         (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9') ||
+                         c == '-' || c == '_' || c == '.' || c == '~');
+      if(safe)
+         out += CharToString((uchar)c);
+      else if(c == ' ')
+         out += "%20";
+      else
+         out += StringFormat("%%%02X", c);
+   }
+   return out;
+}
+
+bool SendTelegramMessage(const string text)
+{
+   if(IsTesterRun() || !InpUseTelegramAlerts)
+      return false;
+
+   string botToken = InpTelegramBotToken;
+   StringTrimLeft(botToken);
+   StringTrimRight(botToken);
+
+   string chatId = InpTelegramChatId;
+   StringTrimLeft(chatId);
+   StringTrimRight(chatId);
+
+   if(StringLen(botToken) == 0 || StringLen(chatId) == 0)
+      return false;
+
+   const string url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+   const string body = "chat_id=" + UrlEncode(chatId) + "&text=" + UrlEncode(text);
+   const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+
+   char data[];
+   char result[];
+   string result_headers = "";
+
+   int copied = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(copied > 0)
+      ArrayResize(data, copied - 1);
+   else
+      ArrayResize(data, 0);
+
+   ResetLastError();
+   const int code = WebRequest("POST", url, headers, 5000, data, result, result_headers);
+   if(code < 200 || code >= 300)
+   {
+      Print("Telegram fail | code=", code,
+            " | err=", GetLastError(),
+            " | allow_url=https://api.telegram.org");
+      return false;
+   }
+
+   return true;
+}
+
+void SendTelegramEvent(const string action, const string side, const double lot, const string note)
+{
+   if(IsTesterRun() || !InpUseTelegramAlerts)
+      return;
+
+   const string msg =
+      "[XAU_StochTrend] " + action + "\n" +
+      "Sym: " + g_symbol + "\n" +
+      "Side: " + side + "\n" +
+      "Lot: " + DoubleToString(lot, 2) + "\n" +
+      "Note: " + note;
+
+   SendTelegramMessage(msg);
 }
 
 string PositionTypeLabel(const ENUM_POSITION_TYPE type)
@@ -411,7 +503,7 @@ double MoneyPerPriceUnitPerLot(const string symbol)
 {
    string sym = symbol;
    StringToUpper(sym);
-   if(StringFind(sym, "XAU") >= 0 && InpXauMoneyPerPriceUnit > 0.0)
+   if((StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0) && InpXauMoneyPerPriceUnit > 0.0)
       return InpXauMoneyPerPriceUnit;
 
    const double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -748,6 +840,14 @@ bool OpenMarket(const bool isBuy, const double lot, const string comment)
          " | lot=", DoubleToString(volume, 2),
          " | comment=", comment);
    g_lastTradeTime = TimeCurrent();
+
+   string action = "Order Open";
+   if(StringFind(comment, "First") >= 0)
+      action = "First Entry Open";
+   else if(StringFind(comment, "Grid") >= 0)
+      action = "Grid Layer Add";
+
+   SendTelegramEvent(action, (isBuy ? "BUY" : "SELL"), volume, comment);
    return true;
 }
 
@@ -760,12 +860,14 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpBuyMagic, POSITION_TYPE_BUY))
       {
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "basket_tp", false);
+         SendTelegramEvent("Basket TP Close", "BUY", 0.0, "BUY basket");
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
          const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "max_dd", pauseAfterClose);
+         SendTelegramEvent("Max DD Hit", "BUY", 0.0, "BUY basket");
          Print("Max DD hit on BUY basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
          return;
       }
@@ -778,12 +880,14 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpSellMagic, POSITION_TYPE_SELL))
       {
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "basket_tp", false);
+         SendTelegramEvent("Basket TP Close", "SELL", 0.0, "SELL basket");
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
          const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "max_dd", pauseAfterClose);
+         SendTelegramEvent("Max DD Hit", "SELL", 0.0, "SELL basket");
          Print("Max DD hit on SELL basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
          return;
       }
@@ -816,7 +920,7 @@ void ManageGrid()
 
       const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
       if(bid > 0.0 && bid <= anchorPrice - InpGridDistance)
-         OpenMarket(true, nextLot, "StochTrendGridBuy");
+         OpenMarket(true, nextLot, "XAU_StochTrendGridBuy");
       return;
    }
 
@@ -832,7 +936,7 @@ void ManageGrid()
 
       const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
       if(ask > 0.0 && ask >= anchorPrice + InpGridDistance)
-         OpenMarket(false, nextLot, "StochTrendGridSell");
+         OpenMarket(false, nextLot, "XAU_StochTrendGridSell");
    }
 }
 
@@ -956,12 +1060,12 @@ void CheckFirstEntryOnNewBar()
 
    if(BuySignal())
    {
-      OpenMarket(true, firstLot, "StochTrendFirstBuy");
+      OpenMarket(true, firstLot, "XAU_StochTrendFirstBuy");
       return;
    }
 
    if(SellSignal())
-      OpenMarket(false, firstLot, "StochTrendFirstSell");
+      OpenMarket(false, firstLot, "XAU_StochTrendFirstSell");
 }
 
 int OnInit()
@@ -973,20 +1077,9 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(InpOnlyXauusd)
-   {
-      string sym = g_symbol;
-      StringToUpper(sym);
-      if(StringFind(sym, "XAU") < 0)
-      {
-         Print("StochTrend is focused on XAU. Attach it to an XAU chart or disable InpOnlyXauusd.");
-         return INIT_FAILED;
-      }
-   }
-
    if(!IsHedgingAccount())
    {
-      Print("StochTrend requires an MT5 hedging account.");
+      Print("XAU_StochTrend requires an MT5 hedging account.");
       return INIT_FAILED;
    }
 
@@ -1021,7 +1114,7 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   Print("StochTrend initialized | symbol=", g_symbol,
+   Print("XAU_StochTrend initialized | symbol=", g_symbol,
          " | MA type=", (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA"),
          " | grid=", DoubleToString(InpGridDistance, 2),
          " | lotLayers=", (string)ArraySize(g_lotTable),

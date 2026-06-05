@@ -6,13 +6,13 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 input group "Telegram"
 input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk"; // Telegram bot token
 input string InpTelegramChatId          = "1448627275"; // Telegram chat id
-input int    InpReportIntervalMinutes   = 15; // Report interval in minutes
+input int    InpReportIntervalMinutes   = 10; // Report interval in minutes
 
 datetime g_lastReportTime = 0;
 datetime g_lastReportAttemptTime = 0;
@@ -150,6 +150,43 @@ double TodayClosedProfit(const datetime nowTime)
    return total;
 }
 
+void GetOpenPositionSummary(int &buyCount, int &sellCount, double &buyLots, double &sellLots, double &floatingAll)
+{
+   buyCount = 0;
+   sellCount = 0;
+   buyLots = 0.0;
+   sellLots = 0.0;
+   floatingAll = 0.0;
+
+   const int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+
+      const ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      const double volume = PositionGetDouble(POSITION_VOLUME);
+
+      floatingAll += PositionGetDouble(POSITION_PROFIT);
+      floatingAll += PositionGetDouble(POSITION_SWAP);
+
+      if(type == POSITION_TYPE_BUY)
+      {
+         buyCount++;
+         buyLots += volume;
+      }
+      else if(type == POSITION_TYPE_SELL)
+      {
+         sellCount++;
+         sellLots += volume;
+      }
+   }
+}
+
 datetime HeartbeatTime()
 {
    datetime nowTime = TimeTradeServer();
@@ -178,14 +215,26 @@ void TrySendFloatingReport()
    g_lastReportAttemptTime = nowTime;
 
    const string accountName = AccountInfoString(ACCOUNT_NAME);
+   const string accountCompany = AccountInfoString(ACCOUNT_COMPANY);
    const double floatingProfit = AccountInfoDouble(ACCOUNT_PROFIT);
    const double todayClosedProfit = TodayClosedProfit(nowTime);
+   int buyCount = 0;
+   int sellCount = 0;
+   double buyLots = 0.0;
+   double sellLots = 0.0;
+   double floatingAll = 0.0;
+   GetOpenPositionSummary(buyCount, sellCount, buyLots, sellLots, floatingAll);
    const string floatingSign = (floatingProfit >= 0.0 ? "+" : "");
    const string todayClosedSign = (todayClosedProfit >= 0.0 ? "+" : "");
+   const string floatingAllSign = (floatingAll >= 0.0 ? "+" : "");
    const string msg =
       "Account: " + accountName + "\n" +
+      "Broker: " + accountCompany + "\n" +
       "Floating Profit: " + floatingSign + DoubleToString(floatingProfit, 2) + "\n" +
-      "Today Closed Profit: " + todayClosedSign + DoubleToString(todayClosedProfit, 2);
+      "Today Closed Profit: " + todayClosedSign + DoubleToString(todayClosedProfit, 2) + "\n" +
+      "Open Positions: " + (string)(buyCount + sellCount) + " (B " + (string)buyCount + " / S " + (string)sellCount + ")\n" +
+      "Open Lots: B " + DoubleToString(buyLots, 2) + " / S " + DoubleToString(sellLots, 2) + "\n" +
+      "Open Floating: " + floatingAllSign + DoubleToString(floatingAll, 2);
 
    if(SendTelegramMessage(msg))
       g_lastReportTime = nowTime;
