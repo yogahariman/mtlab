@@ -16,12 +16,9 @@ from typing import Iterable
 # 1) Isi INPUT_FILES manual, atau
 # 2) Kosongkan INPUT_FILES dan pakai INPUT_FOLDER + INPUT_PATTERN.
 #
-# Contoh Windows:
-# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
-#
 # Contoh WSL/Linux:
-INPUT_FOLDER = Path(r"/Drive/E/mt5")
-# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
+# INPUT_FOLDER = Path(r"/Drive/E/mt5")
+INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
 INPUT_PATTERN = "*.csv"
 # INPUT_PATTERN = "ea_profit_sakti*.csv"
 # INPUT_PATTERN = "202509-20260604_*.csv"

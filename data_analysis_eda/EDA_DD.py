@@ -9,7 +9,7 @@ import numpy as np
 # Konfigurasi utama
 # =========================
 # INPUT_FILE = Path(r"/Drive/D/mt5/BackTest_T1_2020/t1_100.csv")  # Ubah sesuai lokasi data Anda
-INPUT_FILE = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025\403_1_8_9_11.csv")
+INPUT_FILE = Path(r"C:\Users\user\Downloads\EA MT5\BackTest\403_1_8_9_11.csv")
 BUFFER_PCT = 0.20  # buffer modal, contoh 0.20 = 20%
 TARGET_BREACH_PCT = 5.0
 DETAIL_QUANTILE = 0.995

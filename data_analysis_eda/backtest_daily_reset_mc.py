@@ -12,7 +12,7 @@ import pandas as pd
 # Konfigurasi utama
 # =========================
 # INPUT_FOLDER = Path(r"/Drive/E/mt5")
-INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest2025")
+INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
 INPUT_PATTERN = "t1_*.csv"
 INPUT_FILES: list[Path] = []
 

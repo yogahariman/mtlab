@@ -86,7 +86,7 @@ input string InpTelegramChatId           = "1448627275";
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = false;
 input ETimeMode InpTimeMode               = TIME_MODE_WIB;
-input string InpPauseWindows              = "03:00-06:00;18:45-21:00";
+input string InpPauseWindows              = "03:00-08:30;18:00-21:30";
 
 CTrade trade;
 string g_symbol = "";
