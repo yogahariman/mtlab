@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.04"
+#property version   "1.13"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -32,7 +32,8 @@ enum ETimeMode
 enum EMaxDdResumeMode
 {
    MAX_DD_CONTINUE_TRADING = 0,
-   MAX_DD_PAUSE_MANUAL = 1
+   MAX_DD_PAUSE_MANUAL = 1,
+   MAX_DD_PAUSE_NEXT_DAY = 2
 };
 
 enum EBasketTpMode
@@ -41,10 +42,23 @@ enum EBasketTpMode
    BASKET_TP_TOTAL_LOT = 1
 };
 
+enum ETrendFilterMode
+{
+   TREND_FILTER_OFF = 0,
+   TREND_FILTER_SINGLE_EMA = 1,
+   TREND_FILTER_DOUBLE_EMA = 2
+};
+
+enum EStochEntryMode
+{
+   STOCH_ENTRY_ON_CROSS = 0,
+   STOCH_ENTRY_AFTER_CANDLE_CLOSE = 1
+};
+
 input group "General"
 input ETradeMode InpTradeMode             = TRADE_BOTH_SINGLE;
-input long   InpBuyMagic                  = 111111;
-input long   InpSellMagic                 = 222222;
+input long   InpBuyMagic                  = 333333;
+input long   InpSellMagic                 = 444444;
 input double InpMaxSpread                 = 0.40;  // Price distance XAU
 input double InpMaxSlippage               = 0.30;  // Price distance XAU
 input bool   InpUseCloseLock              = true;
@@ -55,14 +69,16 @@ input int    InpCloseAttemptsPerRun       = 1;
 input int    InpCloseLockTimerMs          = 300;
 input int    InpMinSecondsBetweenOrders   = 1;
 
-input group "Indicator"
-input bool   InpUseEmaTrendFilter         = true;
-input bool   InpUseStochasticFilter       = true;
-input bool   InpUsePriceEmaFilter         = false;
+input group "Trend Filter"
+input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_OFF;
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL;
+input int    InpTrendEMAPeriod            = 120;
 input int    InpFastMAPeriod              = 13;
 input int    InpSlowMAPeriod              = 233;
 input double InpEmaMinDistance            = 0.50;  // Price distance XAU
+
+input group "Decision Indicator"
+input EStochEntryMode InpStochEntryMode    = STOCH_ENTRY_ON_CROSS;
 input int    InpKPeriod                   = 5;
 input int    InpDPeriod                   = 3;
 input int    InpSlowing                   = 3;
@@ -70,32 +86,42 @@ input double InpOverbought                = 80.0;
 input double InpOversold                  = 20.0;
 
 input group "Grid Martingale"
-input string InpLotTable                  = "0.10;0.20;0.30;0.40";
+input string InpLotTable                  = "0.10;0.20;0.20;0.30";
 input double InpGridDistance              = 8.00;  // Price distance XAU
 input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
 input double InpXauMoneyPerPriceUnit      = 100.0; // 1 lot profit for XAU move 1.00
 input double InpMaxDrawdownMoney          = 3000.00;
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_MANUAL;
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
 
 input group "Telegram Alerts"
-input bool   InpUseTelegramAlerts         = true;
-input string InpTelegramBotToken         = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";
-input string InpTelegramChatId           = "1448627275";
+input bool   InpUseTelegramAlerts         = false;
+input string InpTelegramBotToken          = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";
+input string InpTelegramChatId            = "1448627275";
 
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = false;
 input ETimeMode InpTimeMode               = TIME_MODE_WIB;
-input string InpPauseWindows              = "03:00-08:30;18:00-21:30";
+input string InpPauseWindows              = "17:00-22:00";
 
 CTrade trade;
 string g_symbol = "";
 datetime g_lastBarTime = 0;
 datetime g_lastTradeTime = 0;
+datetime g_lastFirstEntryBarTime = 0;
 int g_fastMaHandle = INVALID_HANDLE;
 int g_slowMaHandle = INVALID_HANDLE;
 int g_stochHandle = INVALID_HANDLE;
 bool g_pausedByMaxDd = false;
+int g_maxDdPausedDayKey = 0;
+bool g_stochBuyArmed = false;
+bool g_stochSellArmed = false;
+bool g_stochBuyZoneInside = false;
+bool g_stochSellZoneInside = false;
+bool g_pendingStochBuy = false;
+bool g_pendingStochSell = false;
+datetime g_pendingStochBuyBarTime = 0;
+datetime g_pendingStochSellBarTime = 0;
 bool g_closeLockActive = false;
 long g_closeLockMagic = 0;
 ENUM_POSITION_TYPE g_closeLockType = POSITION_TYPE_BUY;
@@ -118,6 +144,296 @@ bool IsTradeAllowed()
 bool IsTesterRun()
 {
    return ((bool)MQLInfoInteger(MQL_TESTER) || (bool)MQLInfoInteger(MQL_OPTIMIZATION));
+}
+
+int TradingDayKey(const datetime whenTime)
+{
+   MqlDateTime dt;
+   ReferenceTimeStruct(whenTime, dt);
+   return (dt.year * 10000 + dt.mon * 100 + dt.day);
+}
+
+bool UseTrendFilter()
+{
+   return (InpTrendFilterMode != TREND_FILTER_OFF);
+}
+
+bool UseSingleEmaTrend()
+{
+   return (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA);
+}
+
+bool UseDoubleEmaTrend()
+{
+   return (InpTrendFilterMode == TREND_FILTER_DOUBLE_EMA);
+}
+
+bool UseStochasticDecision()
+{
+   return true;
+}
+
+int BrokerUtcOffsetHours()
+{
+   return (int)MathRound((double)(TimeCurrent() - TimeGMT()) / 3600.0);
+}
+
+void ResetStochasticPending()
+{
+   g_stochBuyArmed = false;
+   g_stochSellArmed = false;
+   g_pendingStochBuy = false;
+   g_pendingStochSell = false;
+   g_pendingStochBuyBarTime = 0;
+   g_pendingStochSellBarTime = 0;
+}
+
+void UpdateStochasticPendingCross()
+{
+   if(!UseStochasticDecision())
+      return;
+
+   const datetime barTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   if(barTime <= 0)
+      return;
+
+   double main0 = 0.0, main1 = 0.0, signal0 = 0.0, signal1 = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 0, main0)) return;
+   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return;
+   if(!GetBufferValue(g_stochHandle, 1, 0, signal0)) return;
+   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return;
+
+   const bool buyZoneTouchedNow = (main0 < InpOversold && signal0 < InpOversold);
+   const bool sellZoneTouchedNow = (main0 > InpOverbought && signal0 > InpOverbought);
+
+   if(buyZoneTouchedNow)
+   {
+      if(!g_stochBuyZoneInside)
+      {
+         g_stochBuyZoneInside = true;
+         g_stochBuyArmed = true;
+         g_pendingStochBuy = false;
+         g_pendingStochBuyBarTime = 0;
+      }
+   }
+   else
+   {
+      g_stochBuyZoneInside = false;
+   }
+
+   if(sellZoneTouchedNow)
+   {
+      if(!g_stochSellZoneInside)
+      {
+         g_stochSellZoneInside = true;
+         g_stochSellArmed = true;
+         g_pendingStochSell = false;
+         g_pendingStochSellBarTime = 0;
+      }
+   }
+   else
+   {
+      g_stochSellZoneInside = false;
+   }
+
+   if(g_stochBuyArmed && main1 <= signal1 && main0 > signal0)
+   {
+      g_pendingStochBuy = true;
+      g_pendingStochBuyBarTime = barTime;
+      g_pendingStochSell = false;
+      g_pendingStochSellBarTime = 0;
+      g_stochBuyArmed = false;
+      return;
+   }
+
+   if(g_stochSellArmed && main1 >= signal1 && main0 < signal0)
+   {
+      g_pendingStochSell = true;
+      g_pendingStochSellBarTime = barTime;
+      g_pendingStochBuy = false;
+      g_pendingStochBuyBarTime = 0;
+      g_stochSellArmed = false;
+   }
+}
+
+bool StochasticLineTouchedOversold(const int bufferIndex)
+{
+   double value1 = 0.0, value2 = 0.0;
+   if(!GetBufferValue(g_stochHandle, bufferIndex, 1, value1)) return false;
+   if(!GetBufferValue(g_stochHandle, bufferIndex, 2, value2)) return false;
+
+   return (value1 < InpOversold || value2 < InpOversold);
+}
+
+bool StochasticLineTouchedOverbought(const int bufferIndex)
+{
+   double value1 = 0.0, value2 = 0.0;
+   if(!GetBufferValue(g_stochHandle, bufferIndex, 1, value1)) return false;
+   if(!GetBufferValue(g_stochHandle, bufferIndex, 2, value2)) return false;
+
+   return (value1 > InpOverbought || value2 > InpOverbought);
+}
+
+bool StochasticTouchedOversold()
+{
+   return (StochasticLineTouchedOversold(0) &&
+           StochasticLineTouchedOversold(1));
+}
+
+bool StochasticTouchedOverbought()
+{
+   return (StochasticLineTouchedOverbought(0) &&
+           StochasticLineTouchedOverbought(1));
+}
+
+bool StochasticBuyCrossNow()
+{
+   double main0 = 0.0, main1 = 0.0, signal0 = 0.0, signal1 = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 0, main0)) return false;
+   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 0, signal0)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
+
+   return (main1 <= signal1 && main0 > signal0);
+}
+
+bool StochasticSellCrossNow()
+{
+   double main0 = 0.0, main1 = 0.0, signal0 = 0.0, signal1 = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 0, main0)) return false;
+   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 0, signal0)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
+
+   return (main1 >= signal1 && main0 < signal0);
+}
+
+bool StochasticBuyConfirmedAfterClose()
+{
+   double main1 = 0.0, main2 = 0.0, signal1 = 0.0, signal2 = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
+   if(!GetBufferValue(g_stochHandle, 0, 2, main2)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
+
+   if(main2 >= signal2)
+      return false;
+   if(main1 <= signal1)
+      return false;
+   return true;
+}
+
+bool StochasticSellConfirmedAfterClose()
+{
+   double main1 = 0.0, main2 = 0.0, signal1 = 0.0, signal2 = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
+   if(!GetBufferValue(g_stochHandle, 0, 2, main2)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
+   if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
+
+   if(main2 <= signal2)
+      return false;
+   if(main1 >= signal1)
+      return false;
+   return true;
+}
+
+bool BuyTrendSideOK(const int shift)
+{
+   if(!UseTrendFilter())
+      return true;
+
+   double fast = 0.0, slow = 0.0;
+   if(!GetBufferValue(g_fastMaHandle, 0, shift, fast))
+      return false;
+
+   if(UseSingleEmaTrend())
+   {
+      const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+      if(closePrice <= 0.0)
+         return false;
+      return (closePrice > fast);
+   }
+
+   if(UseDoubleEmaTrend())
+   {
+      if(!GetBufferValue(g_slowMaHandle, 0, shift, slow))
+         return false;
+      if(fast <= slow)
+         return false;
+      if(InpEmaMinDistance > 0.0 && MathAbs(fast - slow) < InpEmaMinDistance)
+         return false;
+
+      const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+      if(closePrice <= 0.0)
+         return false;
+      return (closePrice > fast);
+   }
+
+   return true;
+}
+
+bool SellTrendSideOK(const int shift)
+{
+   if(!UseTrendFilter())
+      return true;
+
+   double fast = 0.0, slow = 0.0;
+   if(!GetBufferValue(g_fastMaHandle, 0, shift, fast))
+      return false;
+
+   if(UseSingleEmaTrend())
+   {
+      const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+      if(closePrice <= 0.0)
+         return false;
+      return (closePrice < fast);
+   }
+
+   if(UseDoubleEmaTrend())
+   {
+      if(!GetBufferValue(g_slowMaHandle, 0, shift, slow))
+         return false;
+      if(fast >= slow)
+         return false;
+      if(InpEmaMinDistance > 0.0 && MathAbs(fast - slow) < InpEmaMinDistance)
+         return false;
+
+      const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+      if(closePrice <= 0.0)
+         return false;
+      return (closePrice < fast);
+   }
+
+   return true;
+}
+
+bool BuyDecisionOK_Stochastic()
+{
+   if(!g_pendingStochBuy)
+      return false;
+
+   if(InpStochEntryMode == STOCH_ENTRY_ON_CROSS)
+      return StochasticBuyCrossNow();
+
+   if(g_pendingStochBuyBarTime != iTime(g_symbol, PERIOD_CURRENT, 1))
+      return false;
+
+   return StochasticBuyConfirmedAfterClose();
+}
+
+bool SellDecisionOK_Stochastic()
+{
+   if(!g_pendingStochSell)
+      return false;
+
+   if(InpStochEntryMode == STOCH_ENTRY_ON_CROSS)
+      return StochasticSellCrossNow();
+
+   if(g_pendingStochSellBarTime != iTime(g_symbol, PERIOD_CURRENT, 1))
+      return false;
+
+   return StochasticSellConfirmedAfterClose();
 }
 
 bool IsHedgingAccount()
@@ -278,17 +594,16 @@ bool SendTelegramMessage(const string text)
    return true;
 }
 
-void SendTelegramEvent(const string action, const string side, const double lot, const string note)
+void SendTelegramEvent(const string action, const double lot)
 {
    if(IsTesterRun() || !InpUseTelegramAlerts)
       return;
 
+   const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string msg =
       "[XAU_StochTrend] " + action + "\n" +
-      "Sym: " + g_symbol + "\n" +
-      "Side: " + side + "\n" +
-      "Lot: " + DoubleToString(lot, 2) + "\n" +
-      "Note: " + note;
+      "Broker: " + broker + "\n" +
+      "Lot: " + DoubleToString(lot, 2);
 
    SendTelegramMessage(msg);
 }
@@ -301,9 +616,13 @@ string PositionTypeLabel(const ENUM_POSITION_TYPE type)
 void ReferenceTimeStruct(const datetime whenTime, MqlDateTime &dt)
 {
    datetime refTime = whenTime;
-   if(InpTimeMode != TIME_MODE_BROKER)
+   if(InpTimeMode == TIME_MODE_BROKER)
    {
-      const int brokerUtcOffset = (int)MathRound((double)(TimeCurrent() - TimeGMT()) / 3600.0);
+      refTime = whenTime;
+   }
+   else
+   {
+      const int brokerUtcOffset = BrokerUtcOffsetHours();
       refTime = whenTime - brokerUtcOffset * 3600;
       if(InpTimeMode == TIME_MODE_WIB)
          refTime += 7 * 3600;
@@ -396,6 +715,21 @@ bool IsFirstEntryPausedByTime()
 
 bool TryResumeAfterMaxDd()
 {
+   if(!g_pausedByMaxDd)
+      return true;
+
+   if(InpMaxDdResumeMode != MAX_DD_PAUSE_NEXT_DAY)
+      return false;
+
+   if(g_maxDdPausedDayKey <= 0)
+      return false;
+
+   if(TradingDayKey(TimeCurrent()) == g_maxDdPausedDayKey)
+      return false;
+
+   g_pausedByMaxDd = false;
+   g_maxDdPausedDayKey = 0;
+   Print("Max DD pause lifted | resume=next_day");
    return (!g_pausedByMaxDd);
 }
 
@@ -711,7 +1045,10 @@ bool ProcessCloseLock()
    if(remain <= 0)
    {
       if(g_closeLockPauseAfterClose)
+      {
          g_pausedByMaxDd = true;
+         g_maxDdPausedDayKey = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY ? TradingDayKey(TimeCurrent()) : 0);
+      }
       Print("Close lock OFF | all positions closed");
       ResetCloseLock();
       return true;
@@ -724,7 +1061,10 @@ bool ProcessCloseLock()
    if(remain <= 0)
    {
       if(g_closeLockPauseAfterClose)
+      {
          g_pausedByMaxDd = true;
+         g_maxDdPausedDayKey = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY ? TradingDayKey(TimeCurrent()) : 0);
+      }
       Print("Close lock OFF | all positions closed");
       ResetCloseLock();
    }
@@ -766,6 +1106,7 @@ void CloseBasket(const long magic, const ENUM_POSITION_TYPE type, const string r
    if(pauseAfterClose)
    {
       g_pausedByMaxDd = true;
+      g_maxDdPausedDayKey = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY ? TradingDayKey(TimeCurrent()) : 0);
    }
 }
 
@@ -843,11 +1184,15 @@ bool OpenMarket(const bool isBuy, const double lot, const string comment)
 
    string action = "Order Open";
    if(StringFind(comment, "First") >= 0)
+   {
       action = "First Entry Open";
+      g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+      ResetStochasticPending();
+   }
    else if(StringFind(comment, "Grid") >= 0)
       action = "Grid Layer Add";
 
-   SendTelegramEvent(action, (isBuy ? "BUY" : "SELL"), volume, comment);
+   SendTelegramEvent(action, volume);
    return true;
 }
 
@@ -860,15 +1205,18 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpBuyMagic, POSITION_TYPE_BUY))
       {
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "basket_tp", false);
-         SendTelegramEvent("Basket TP Close", "BUY", 0.0, "BUY basket");
+         SendTelegramEvent("Basket TP Close", 0.0);
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
          const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
+         const string ddAction = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY
+            ? "close_and_pause_next_day"
+            : "close_and_pause_manual");
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "max_dd", pauseAfterClose);
-         SendTelegramEvent("Max DD Hit", "BUY", 0.0, "BUY basket");
-         Print("Max DD hit on BUY basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
+         SendTelegramEvent("Max DD Hit", 0.0);
+         Print("Max DD hit on BUY basket. Action=", (pauseAfterClose ? ddAction : "close_and_continue"));
          return;
       }
    }
@@ -880,15 +1228,18 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpSellMagic, POSITION_TYPE_SELL))
       {
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "basket_tp", false);
-         SendTelegramEvent("Basket TP Close", "SELL", 0.0, "SELL basket");
+         SendTelegramEvent("Basket TP Close", 0.0);
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
          const bool pauseAfterClose = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
+         const string ddAction = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY
+            ? "close_and_pause_next_day"
+            : "close_and_pause_manual");
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "max_dd", pauseAfterClose);
-         SendTelegramEvent("Max DD Hit", "SELL", 0.0, "SELL basket");
-         Print("Max DD hit on SELL basket. Action=", (pauseAfterClose ? "close_and_pause" : "close_and_continue"));
+         SendTelegramEvent("Max DD Hit", 0.0);
+         Print("Max DD hit on SELL basket. Action=", (pauseAfterClose ? ddAction : "close_and_continue"));
          return;
       }
    }
@@ -896,7 +1247,11 @@ void ManageBasketRiskAndExit()
 
 void ManageGrid()
 {
+   if(!TryResumeAfterMaxDd())
+      return;
    if(g_pausedByMaxDd)
+      return;
+   if(!IsNewBar())
       return;
 
    if(!SpreadOK())
@@ -945,49 +1300,14 @@ bool BuySignal()
    if(InpTradeMode == TRADE_SELL_ONLY)
       return false;
 
-   double fast1 = 0.0, slow1 = 0.0;
-   if(InpUseEmaTrendFilter || InpUsePriceEmaFilter)
-   {
-      if(!GetBufferValue(g_fastMaHandle, 0, 1, fast1)) return false;
-   }
-
-   if(InpUseEmaTrendFilter)
-   {
-      if(!GetBufferValue(g_slowMaHandle, 0, 1, slow1)) return false;
-      if(fast1 <= slow1)
-         return false;
-      if(InpEmaMinDistance > 0.0 && MathAbs(fast1 - slow1) < InpEmaMinDistance)
-         return false;
-   }
-
-   if(InpUsePriceEmaFilter)
-   {
-      const double close1 = iClose(g_symbol, PERIOD_CURRENT, 1);
-      if(close1 <= fast1)
-         return false;
-   }
-
-   if(!InpUseStochasticFilter)
-      return true;
-
-   double main1 = 0.0, main2 = 0.0, signal1 = 0.0, signal2 = 0.0;
-   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
-   if(!GetBufferValue(g_stochHandle, 0, 2, main2)) return false;
-   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
-   if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
-
-   const bool touchedOversold =
-      (main1 < InpOversold || signal1 < InpOversold ||
-       main2 < InpOversold || signal2 < InpOversold);
-
-   if(main2 >= signal2)
+   if(!BuyTrendSideOK(1))
       return false;
-   if(main1 <= signal1)
+   if(!BuyTrendSideOK(0))
       return false;
-   if(!touchedOversold)
-      return false;
+   if(UseStochasticDecision())
+      return BuyDecisionOK_Stochastic();
 
-   return true;
+   return false;
 }
 
 bool SellSignal()
@@ -995,49 +1315,14 @@ bool SellSignal()
    if(InpTradeMode == TRADE_BUY_ONLY)
       return false;
 
-   double fast1 = 0.0, slow1 = 0.0;
-   if(InpUseEmaTrendFilter || InpUsePriceEmaFilter)
-   {
-      if(!GetBufferValue(g_fastMaHandle, 0, 1, fast1)) return false;
-   }
-
-   if(InpUseEmaTrendFilter)
-   {
-      if(!GetBufferValue(g_slowMaHandle, 0, 1, slow1)) return false;
-      if(fast1 >= slow1)
-         return false;
-      if(InpEmaMinDistance > 0.0 && MathAbs(fast1 - slow1) < InpEmaMinDistance)
-         return false;
-   }
-
-   if(InpUsePriceEmaFilter)
-   {
-      const double close1 = iClose(g_symbol, PERIOD_CURRENT, 1);
-      if(close1 >= fast1)
-         return false;
-   }
-
-   if(!InpUseStochasticFilter)
-      return true;
-
-   double main1 = 0.0, main2 = 0.0, signal1 = 0.0, signal2 = 0.0;
-   if(!GetBufferValue(g_stochHandle, 0, 1, main1)) return false;
-   if(!GetBufferValue(g_stochHandle, 0, 2, main2)) return false;
-   if(!GetBufferValue(g_stochHandle, 1, 1, signal1)) return false;
-   if(!GetBufferValue(g_stochHandle, 1, 2, signal2)) return false;
-
-   const bool touchedOverbought =
-      (main1 > InpOverbought || signal1 > InpOverbought ||
-       main2 > InpOverbought || signal2 > InpOverbought);
-
-   if(main2 <= signal2)
+   if(!SellTrendSideOK(1))
       return false;
-   if(main1 >= signal1)
+   if(!SellTrendSideOK(0))
       return false;
-   if(!touchedOverbought)
-      return false;
+   if(UseStochasticDecision())
+      return SellDecisionOK_Stochastic();
 
-   return true;
+   return false;
 }
 
 void CheckFirstEntryOnNewBar()
@@ -1051,7 +1336,10 @@ void CheckFirstEntryOnNewBar()
    if(CountFirstEntryPositionsForCurrentMode() > 0)
       return;
 
-   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter)
+   const datetime currentBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   if(currentBarTime <= 0)
+      return;
+   if(g_lastFirstEntryBarTime == currentBarTime)
       return;
 
    double firstLot = 0.0;
@@ -1083,7 +1371,7 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(InpFastMAPeriod <= 0 || InpSlowMAPeriod <= 0 || InpKPeriod <= 0 || InpDPeriod <= 0 || InpSlowing <= 0)
+   if(InpTrendEMAPeriod <= 0 || InpFastMAPeriod <= 0 || InpSlowMAPeriod <= 0 || InpKPeriod <= 0 || InpDPeriod <= 0 || InpSlowing <= 0)
    {
       Print("Invalid indicator period input.");
       return INIT_PARAMETERS_INCORRECT;
@@ -1101,14 +1389,21 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(!InpUseEmaTrendFilter && !InpUseStochasticFilter)
-      Print("Warning: EMA Trend Filter and Stochastic Filter are both disabled. No first entry will be opened.");
+   if(!UseTrendFilter())
+      Print("Warning: Trend Filter is disabled. Decision Indicator will be used without trend direction filter.");
 
-   g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpFastMAPeriod, 0, MaMethod(), PRICE_CLOSE);
+   const int trendPeriod = (UseSingleEmaTrend() ? InpTrendEMAPeriod : InpFastMAPeriod);
+   g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, trendPeriod, 0, MaMethod(), PRICE_CLOSE);
    g_slowMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpSlowMAPeriod, 0, MaMethod(), PRICE_CLOSE);
-   g_stochHandle = iStochastic(g_symbol, PERIOD_CURRENT, InpKPeriod, InpDPeriod, InpSlowing, MODE_SMA, STO_LOWHIGH);
+   if(UseStochasticDecision())
+      g_stochHandle = iStochastic(g_symbol, PERIOD_CURRENT, InpKPeriod, InpDPeriod, InpSlowing, MODE_SMA, STO_LOWHIGH);
 
-   if(g_fastMaHandle == INVALID_HANDLE || g_slowMaHandle == INVALID_HANDLE || g_stochHandle == INVALID_HANDLE)
+   const bool indicatorHandlesOK =
+      (g_fastMaHandle != INVALID_HANDLE &&
+       g_slowMaHandle != INVALID_HANDLE &&
+       (!UseStochasticDecision() || g_stochHandle != INVALID_HANDLE));
+
+   if(!indicatorHandlesOK)
    {
       Print("Failed to create indicator handles.");
       return INIT_FAILED;
@@ -1116,6 +1411,9 @@ int OnInit()
 
    Print("XAU_StochTrend initialized | symbol=", g_symbol,
          " | MA type=", (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA"),
+         " | trendMode=", (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")),
+         " | trendPeriod=", DoubleToString(trendPeriod, 0),
+         " | stochEntryMode=", (InpStochEntryMode == STOCH_ENTRY_ON_CROSS ? "ON_CROSS" : "AFTER_CANDLE_CLOSE"),
          " | grid=", DoubleToString(InpGridDistance, 2),
          " | lotLayers=", (string)ArraySize(g_lotTable),
          " | basketTPMode=", (InpBasketTpMode == BASKET_TP_TOTAL_LOT ? "TOTAL_LOT" : "BASE_LOT"),
@@ -1149,6 +1447,8 @@ void OnTick()
    if(!IsTradeAllowed())
       return;
 
+   UpdateStochasticPendingCross();
+
    if(ProcessCloseLock())
       return;
 
@@ -1158,6 +1458,5 @@ void OnTick()
 
    ManageGrid();
 
-   if(IsNewBar())
-      CheckFirstEntryOnNewBar();
+   CheckFirstEntryOnNewBar();
 }

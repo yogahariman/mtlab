@@ -17,8 +17,8 @@ from typing import Iterable
 # 2) Kosongkan INPUT_FILES dan pakai INPUT_FOLDER + INPUT_PATTERN.
 #
 # Contoh WSL/Linux:
-# INPUT_FOLDER = Path(r"/Drive/E/mt5")
-INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
+INPUT_FOLDER = Path(r"/Drive/E/mt5")
+# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
 INPUT_PATTERN = "*.csv"
 # INPUT_PATTERN = "ea_profit_sakti*.csv"
 # INPUT_PATTERN = "202509-20260604_*.csv"

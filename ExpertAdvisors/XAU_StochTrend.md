@@ -1,65 +1,57 @@
 # XAU_StochTrend
 
-XAU_StochTrend adalah konsep Expert Advisor (EA) yang menggunakan arah tren dari EMA dan sinyal crossing dari Stochastic Oscillator.
+XAU_StochTrend adalah konsep Expert Advisor (EA) yang menggunakan satu lapis Trend Filter untuk membaca arah market dan satu lapis Decision Indicator untuk mencari momen entry.
 
-Metode ini dibuat agar EA tidak langsung membuka posisi hanya karena Stochastic berada di area jenuh beli atau jenuh jual. EA tetap menunggu arah tren utama dan konfirmasi crossing sebelum melakukan entry.
+Metode ini dibuat agar EA tidak langsung membuka posisi hanya karena Stochastic berada di area jenuh beli atau jenuh jual. EA tetap menunggu arah tren utama dan konfirmasi crossing, lalu entry dilakukan saat cross sedang berjalan jika filter trend juga cocok. Sinyal first entry dicek pada tick berjalan, bukan menunggu candle close.
 
 ## Konsep Dasar
 
-EA menggunakan dua filter utama:
+EA menggunakan dua komponen utama yang dipisahkan di setting agar lebih jelas:
 
-1. **EMA 50 dan EMA 200** untuk membaca arah tren.
-2. **Stochastic Oscillator** untuk mencari momen entry.
+1. **Trend Filter** untuk membaca arah market.
+2. **Decision Indicator** untuk mencari momen entry.
 
-Default indikator:
+Default setting:
 
 ```text
 Signal Timeframe = Current Chart
 
-Use EMA Trend Filter = true
-Use Stochastic Filter = true
+Trend Filter
+Trend Filter Mode = Single EMA
 Moving Average Type = Exponential
-Fast EMA = 50
-Slow EMA = 200
+Trend EMA Period = 120
+Fast EMA = 13
+Slow EMA = 233
 
-K Period   = 5
+Decision Indicator
+Decision Indicator Mode = Stochastic Oscillator
+K Period   = 9
 D Period   = 3
 Slowing    = 3
 Overbought = 80
 Oversold   = 20
+SAR Step   = 0.02
+SAR Max    = 0.20
 ```
 
-Jika EMA 50 berada di atas EMA 200, kondisi pasar dianggap cenderung naik. Dalam kondisi ini, EA hanya mencari peluang BUY.
+Jika Trend Filter berada di mode **Single EMA** dan harga saat ini berada di atas EMA, kondisi pasar dianggap cenderung naik. Dalam kondisi ini, EA hanya mencari peluang BUY.
 
-Jika EMA 50 berada di bawah EMA 200, kondisi pasar dianggap cenderung turun. Dalam kondisi ini, EA hanya mencari peluang SELL.
+Jika Trend Filter berada di mode **Single EMA** dan harga saat ini berada di bawah EMA, kondisi pasar dianggap cenderung turun. Dalam kondisi ini, EA hanya mencari peluang SELL.
 
-Filter EMA dan Stochastic dapat dimatikan sementara untuk testing algoritma. Jika EMA Trend Filter dimatikan, EA tidak memakai arah EMA 50/200 sebagai syarat first entry. Jika Stochastic Filter dimatikan, EA tidak menunggu crossing Stochastic sebagai syarat first entry.
+Trend Filter dan Decision Indicator bisa diganti-ganti mode-nya untuk testing algoritma. Jika Trend Filter dimatikan, EA tidak memakai arah EMA sebagai syarat first entry. Decision Indicator saat ini bisa dipilih antara Stochastic Oscillator dan Parabolic SAR.
 
-Jika kedua filter dimatikan, EA tidak membuka first entry pada mode apa pun karena arah entry tidak dapat ditentukan.
+Trend Filter dapat dipilih oleh user:
 
-Moving Average Type dapat dipilih oleh user:
+1. **Off**: tidak ada filter arah market.
+2. **Single EMA**: harga saat ini harus di atas/bawah EMA period tunggal.
+3. **Double EMA**: fast EMA harus di atas/bawah slow EMA.
+
+Pada mode **Single EMA**, yang dipakai adalah `Trend EMA Period`. `Fast EMA` dan `Slow EMA` dipakai hanya saat `Trend Filter Mode = Double EMA`.
+
+Moving Average Type tetap bisa dipilih oleh user:
 
 1. **Exponential**: lebih responsif terhadap perubahan harga terbaru. Ini menjadi pilihan default.
 2. **Simple**: lebih halus, tetapi biasanya lebih lambat merespons perubahan harga.
-
-## Price EMA Filter
-
-Price EMA Filter adalah filter tambahan untuk memastikan harga berada di sisi yang sesuai dengan Fast EMA.
-
-Default awal:
-
-```text
-Use Price EMA Filter = false
-Price Filter MA      = Fast EMA
-Apply Price          = Close
-```
-
-Jika filter ini aktif, aturan tambahannya adalah:
-
-1. BUY hanya valid jika close candle berada di atas Fast EMA.
-2. SELL hanya valid jika close candle berada di bawah Fast EMA.
-
-Filter ini dapat membantu mengurangi entry saat harga sudah bergerak terlalu jauh melawan arah Fast EMA. Namun, karena bisa membuat entry lebih ketat, default awal dibuat `false`.
 
 ## Filter Kekuatan Tren untuk XAU
 
@@ -69,8 +61,8 @@ Jika jarak EMA terlalu dekat, market bisa dianggap belum punya arah yang kuat. D
 
 Aturan sederhananya:
 
-1. Untuk BUY, EMA 50 harus berada di atas EMA 200 dan jaraknya harus cukup jauh.
-2. Untuk SELL, EMA 50 harus berada di bawah EMA 200 dan jaraknya harus cukup jauh.
+1. Untuk BUY, EMA cepat harus berada di atas EMA lambat dan jaraknya harus cukup jauh.
+2. Untuk SELL, EMA cepat harus berada di bawah EMA lambat dan jaraknya harus cukup jauh.
 
 Jarak EMA dapat dibuat dengan dua cara:
 
@@ -196,7 +188,7 @@ Nilai point broker berbeda, tetapi jarak harga XAU tetap sama, yaitu `8.00`.
 
 ## Martingale Grid Setelah First Entry
 
-First entry tetap diambil dari sinyal utama, yaitu arah EMA dan crossing Stochastic. Namun, jika setelah first entry harga bergerak melawan arah posisi, EA dapat menggunakan martingale grid sebagai mekanisme recovery.
+First entry tetap diambil dari kombinasi Trend Filter dan Decision Indicator. Namun, jika setelah first entry harga bergerak melawan arah posisi, EA dapat menggunakan martingale grid sebagai mekanisme recovery.
 
 Martingale grid bukan sinyal entry utama. Fungsinya hanya aktif ketika posisi pertama sedang floating loss dan harga sudah bergerak sejauh grid distance.
 
@@ -448,11 +440,22 @@ Jika Pause Windows dikosongkan, maka tidak ada jam pause yang digunakan walaupun
 
 Di luar jam pause tersebut, EA boleh mencari sinyal first entry selama semua filter lain terpenuhi.
 
+## Decision Indicator Mode
+
+Decision Indicator dapat dipilih oleh user:
+
+1. **Stochastic Oscillator**: memakai oversold/overbought dan crossing Main/Signal pada bar berjalan.
+2. **Parabolic SAR**: memakai posisi titik SAR terhadap harga untuk konfirmasi arah.
+
+Saat ini default masih **Stochastic Oscillator**.
+
+Jika mode **Parabolic SAR** dipilih, parameter `K Period`, `D Period`, `Slowing`, `Overbought`, dan `Oversold` tidak dipakai. Yang dipakai adalah `SAR Step` dan `SAR Max`.
+
 ## Sinyal BUY
 
 Sinyal BUY muncul ketika tren sedang naik, lalu Stochastic sempat masuk ke area oversold di bawah level 20.
 
-Setelah itu, EA menunggu garis Main Stochastic memotong ke atas garis Signal. Crossing boleh terjadi setelah Stochastic keluar kembali dari area oversold, selama sebelumnya area tersebut memang sudah tersentuh.
+Setelah itu, EA menunggu garis Main Stochastic memotong ke atas garis Signal pada bar berjalan. Crossing boleh terjadi selama sebelumnya area tersebut memang sudah tersentuh.
 
 Dengan cara ini, EA mencoba masuk saat harga mulai memantul kembali searah tren naik.
 
@@ -460,12 +463,24 @@ Dengan cara ini, EA mencoba masuk saat harga mulai memantul kembali searah tren 
 
 Sinyal SELL muncul ketika tren sedang turun, lalu Stochastic sempat masuk ke area overbought di atas level 80.
 
-Setelah itu, EA menunggu garis Main Stochastic memotong ke bawah garis Signal. Crossing boleh terjadi setelah Stochastic turun kembali dari area overbought, selama sebelumnya area tersebut memang sudah tersentuh.
+Setelah itu, EA menunggu garis Main Stochastic memotong ke bawah garis Signal pada bar berjalan. Crossing boleh terjadi selama sebelumnya area tersebut memang sudah tersentuh.
 
 Dengan cara ini, EA mencoba masuk saat harga mulai turun kembali searah tren utama.
 
+## Sinyal BUY Dengan Parabolic SAR
+
+Jika Decision Indicator diubah ke **Parabolic SAR**, sinyal BUY muncul ketika titik SAR sudah berada di bawah harga saat ini.
+
+Jika sebelumnya SAR masih berada di atas harga lalu berpindah ke bawah harga, itu dianggap sinyal BUY yang lebih kuat.
+
+## Sinyal SELL Dengan Parabolic SAR
+
+Jika Decision Indicator diubah ke **Parabolic SAR**, sinyal SELL muncul ketika titik SAR sudah berada di atas harga saat ini.
+
+Jika sebelumnya SAR masih berada di bawah harga lalu berpindah ke atas harga, itu dianggap sinyal SELL yang lebih kuat.
+
 ## Catatan
 
-Logika ini membantu mengurangi entry yang terlalu cepat, karena EA tidak hanya melihat level Stochastic, tetapi juga menunggu zona ekstrem tersentuh lebih dulu lalu crossing terkonfirmasi sesudahnya.
+Logika ini membantu mengurangi entry yang terlalu cepat, karena EA tidak hanya melihat level Stochastic, tetapi juga menunggu zona ekstrem tersentuh lebih dulu lalu crossing terdeteksi pada bar berjalan.
 
-Kelemahannya, sinyal bisa sedikit terlambat karena EA menunggu candle tertutup terlebih dahulu. Namun, konfirmasi ini dapat membantu menghindari sinyal palsu yang muncul saat candle masih berjalan.
+Kelemahannya, sinyal live lebih sensitif terhadap noise intrabar. Karena itu trend filter tetap penting agar entry tidak terlalu mudah terpancing.
