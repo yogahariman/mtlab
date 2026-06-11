@@ -70,7 +70,7 @@ input int    InpCloseLockTimerMs          = 300;
 input int    InpMinSecondsBetweenOrders   = 1;
 
 input group "Trend Filter"
-input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_OFF;
+input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_SINGLE_EMA;
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL;
 input int    InpTrendEMAPeriod            = 120;
 input int    InpFastMAPeriod              = 13;
@@ -95,14 +95,14 @@ input double InpMaxDrawdownMoney          = 3000.00;
 input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
 
 input group "Telegram Alerts"
-input bool   InpUseTelegramAlerts         = false;
+input bool   InpUseTelegramAlerts         = true;
 input string InpTelegramBotToken          = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";
 input string InpTelegramChatId            = "1448627275";
 
 input group "Manual Time Filter"
-input bool   InpUseTimeFilter             = false;
-input ETimeMode InpTimeMode               = TIME_MODE_WIB;
-input string InpPauseWindows              = "17:00-22:00";
+input bool   InpUseTimeFilter             = true;
+input ETimeMode InpTimeMode               = TIME_MODE_BROKER;
+input string InpPauseWindows              = "0:00-5:00;13:00-18:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 CTrade trade;
 string g_symbol = "";
@@ -208,32 +208,28 @@ void UpdateStochasticPendingCross()
 
    if(buyZoneTouchedNow)
    {
-      if(!g_stochBuyZoneInside)
-      {
-         g_stochBuyZoneInside = true;
-         g_stochBuyArmed = true;
-         g_pendingStochBuy = false;
-         g_pendingStochBuyBarTime = 0;
-      }
+      g_stochBuyZoneInside = true;
+      g_stochBuyArmed = true;
    }
    else
    {
       g_stochBuyZoneInside = false;
+      g_stochBuyArmed = false;
+      g_pendingStochBuy = false;
+      g_pendingStochBuyBarTime = 0;
    }
 
    if(sellZoneTouchedNow)
    {
-      if(!g_stochSellZoneInside)
-      {
-         g_stochSellZoneInside = true;
-         g_stochSellArmed = true;
-         g_pendingStochSell = false;
-         g_pendingStochSellBarTime = 0;
-      }
+      g_stochSellZoneInside = true;
+      g_stochSellArmed = true;
    }
    else
    {
       g_stochSellZoneInside = false;
+      g_stochSellArmed = false;
+      g_pendingStochSell = false;
+      g_pendingStochSellBarTime = 0;
    }
 
    if(g_stochBuyArmed && main1 <= signal1 && main0 > signal0)

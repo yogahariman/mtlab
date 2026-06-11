@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 input group "Telegram"
@@ -114,6 +114,18 @@ datetime DayStartFromTime(const datetime whenTime)
    return StructToTime(dt);
 }
 
+datetime WeekStartFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   const int daysBack = (dt.day_of_week + 6) % 7; // Monday = 0, Sunday = 6
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   dt.day -= daysBack;
+   return StructToTime(dt);
+}
+
 double TodayClosedProfit(const datetime nowTime)
 {
    const datetime dayStart = DayStartFromTime(nowTime);
@@ -122,6 +134,42 @@ double TodayClosedProfit(const datetime nowTime)
    if(!HistorySelect(dayStart, nowTime))
    {
       Print("HistorySelect fail | from=", TimeToString(dayStart),
+            " | to=", TimeToString(nowTime),
+            " | err=", GetLastError());
+      return 0.0;
+   }
+
+   const int dealsTotal = HistoryDealsTotal();
+   for(int i = 0; i < dealsTotal; i++)
+   {
+      const ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+
+      const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+         continue;
+
+      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      total += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      total += HistoryDealGetDouble(ticket, DEAL_SWAP);
+      total += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+   }
+
+   return total;
+}
+
+double WeeklyClosedProfit(const datetime nowTime)
+{
+   const datetime weekStart = WeekStartFromTime(nowTime);
+   double total = 0.0;
+
+   if(!HistorySelect(weekStart, nowTime))
+   {
+      Print("HistorySelect fail | from=", TimeToString(weekStart),
             " | to=", TimeToString(nowTime),
             " | err=", GetLastError());
       return 0.0;
@@ -214,26 +262,26 @@ void TrySendFloatingReport()
 
    g_lastReportAttemptTime = nowTime;
 
-   const string accountName = AccountInfoString(ACCOUNT_NAME);
    const string accountCompany = AccountInfoString(ACCOUNT_COMPANY);
-   const double floatingProfit = AccountInfoDouble(ACCOUNT_PROFIT);
    const double todayClosedProfit = TodayClosedProfit(nowTime);
+   const double weeklyClosedProfit = WeeklyClosedProfit(nowTime);
    int buyCount = 0;
    int sellCount = 0;
    double buyLots = 0.0;
    double sellLots = 0.0;
    double floatingAll = 0.0;
    GetOpenPositionSummary(buyCount, sellCount, buyLots, sellLots, floatingAll);
-   const string floatingSign = (floatingProfit >= 0.0 ? "+" : "");
    const string todayClosedSign = (todayClosedProfit >= 0.0 ? "+" : "");
+   const string weeklyClosedSign = (weeklyClosedProfit >= 0.0 ? "+" : "");
    const string floatingAllSign = (floatingAll >= 0.0 ? "+" : "");
    const string msg =
-      "Account: " + accountName + "\n" +
+      // "Account: " + accountName + "\n" +
       "Broker: " + accountCompany + "\n" +
-      "Floating Profit: " + floatingSign + DoubleToString(floatingProfit, 2) + "\n" +
-      "Today Closed Profit: " + todayClosedSign + DoubleToString(todayClosedProfit, 2) + "\n" +
+      "Profit: Today " + todayClosedSign + DoubleToString(todayClosedProfit, 2) +
+      " / Week " + weeklyClosedSign + DoubleToString(weeklyClosedProfit, 2) + "\n" +
       "Open Positions: " + (string)(buyCount + sellCount) + " (B " + (string)buyCount + " / S " + (string)sellCount + ")\n" +
-      "Open Lots: B " + DoubleToString(buyLots, 2) + " / S " + DoubleToString(sellLots, 2) + "\n" +
+      // "Open Lots: B " + DoubleToString(buyLots, 2) + " / S " + DoubleToString(sellLots, 2) + "\n" +
+      // "Floating Profit: " + floatingSign + DoubleToString(floatingProfit, 2) + "\n" +
       "Open Floating: " + floatingAllSign + DoubleToString(floatingAll, 2);
 
    if(SendTelegramMessage(msg))
