@@ -7,6 +7,10 @@ sebagai balance - equity, lalu merangkum:
 - tanggal mana saja yang terkena MAX_DD
 - ringkasan event per jam dan per file
 
+Secara default, yang dihitung adalah jumlah "kejadian" saat DD baru
+menembus threshold dari bawah ke atas, bukan semua baris yang masih berada
+di atas threshold. Ini biasanya lebih dekat ke frekuensi stoploss.
+
 Format CSV yang didukung mengikuti pola yang sudah dipakai skrip EDA lain
 di folder ini.
 """
@@ -26,12 +30,19 @@ import pandas as pd
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
 
 # Ubah sesuai kebutuhan:
-INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_PATTERN = "2020-2026_ema120_933_dd3000*.csv"
+# INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
+INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
+INPUT_PATTERN = "all.csv"
 INPUT_FILES: List[Path] = []
 
 # Threshold DD yang ingin dianalisis.
-MAX_DD = 2300
+MAX_DD = 1500
+
+# Mode hitung kejadian:
+# - "crossing"  = hitung saat DD baru menembus threshold dari bawah
+# - "threshold" = hitung semua baris yang DD-nya >= threshold
+# Untuk frekuensi stoploss, "crossing" biasanya lebih tepat.
+COUNT_MODE = "crossing"
 
 # Konversi broker -> WIB. Contoh: 00.00 broker = 04.00 WIB.
 TIME_OFFSET_HOURS = 4
@@ -208,11 +219,21 @@ def build_day_hour_counts(event_df: pd.DataFrame) -> pd.DataFrame:
     return hits
 
 
+def build_event_df(all_df: pd.DataFrame, max_dd: float, count_mode: str) -> pd.DataFrame:
+    if count_mode == "threshold":
+        return all_df[all_df["dd"] >= max_dd].copy()
+
+    prev_dd = all_df["dd"].shift(fill_value=-np.inf)
+    crossing_mask = (all_df["dd"] >= max_dd) & (prev_dd < max_dd)
+    return all_df[crossing_mask].copy()
+
+
 def plot_analysis(
     hour_summary: pd.DataFrame,
     severity_summary: pd.DataFrame,
     day_hour_counts: pd.DataFrame,
     max_dd: float,
+    count_mode: str,
     input_folder: Path,
     input_pattern: str,
     time_label: str,
@@ -264,7 +285,7 @@ def plot_analysis(
     ax1.set_xticks(range(24))
     ax1.set_xlim(-0.5, 23.5)
     ax1.set_xlabel(f"Jam {time_label}")
-    ax1.set_ylabel("Jumlah event DD >= MAX_DD")
+    ax1.set_ylabel("Jumlah kejadian DD >= threshold")
     ax1.set_title(f"1) Frekuensi per Jam ({time_label})")
     ax1.grid(axis="y", alpha=0.25)
     ax1.legend(loc="upper right")
@@ -293,7 +314,7 @@ def plot_analysis(
     ax2.text(
         0.01,
         0.98,
-        "Hanya jam yang terkena MAX_DD yang dihitung di sini",
+        "Yang dihitung adalah kejadian DD yang lolos threshold",
         transform=ax2.transAxes,
         ha="left",
         va="top",
@@ -319,10 +340,10 @@ def plot_analysis(
                 ax3.text(hour_idx, day_idx, f"{int(val)}", ha="center", va="center", fontsize=6, color="black")
 
     cbar = fig.colorbar(im, ax=ax3, orientation="horizontal", pad=0.13, fraction=0.06)
-    cbar.set_label("Jumlah event DD >= MAX_DD")
+    cbar.set_label("Jumlah kejadian DD >= threshold")
 
     fig.suptitle(
-        f"Analisis MAX_DD ({time_label}) | threshold = {max_dd:,.2f} | file/folder: {input_folder} | pattern: {input_pattern}",
+        f"Analisis MAX_DD ({time_label}) | threshold = {max_dd:,.2f} | mode = {count_mode} | file/folder: {input_folder} | pattern: {input_pattern}",
         fontsize=12,
         y=0.985,
     )
@@ -365,6 +386,7 @@ def main() -> int:
     input_folder = args.input_folder
     input_pattern = args.input_pattern
     max_dd = float(args.max_dd)
+    count_mode = COUNT_MODE
     plot_hourly_view = PLOT_HOURLY_VIEW and not args.no_plot
     time_label = "WIB"
 
@@ -424,9 +446,9 @@ def main() -> int:
         .reset_index(drop=True)
     )
 
-    event_df = all_df[all_df["dd"] >= max_dd].copy()
+    event_df = build_event_df(all_df, max_dd, count_mode)
     if event_df.empty:
-        print(f"Tidak ada event DD >= {max_dd:,.2f}.")
+        print(f"Tidak ada kejadian DD >= {max_dd:,.2f}.")
         print(f"File dibaca      : {len(files)}")
         print(f"Total baris valid: {total_rows:,}")
         print(f"Timezone tampilan: WIB (broker +{TIME_OFFSET_HOURS} jam)")
@@ -480,7 +502,7 @@ def main() -> int:
     print(f"Pattern input       : {input_pattern}")
     print(f"File dibaca         : {len(files)}")
     print(f"Total baris valid   : {total_rows:,}")
-    print(f"Event DD >= {max_dd:,.2f}: {total_hits:,}")
+    print(f"Kejadian DD >= {max_dd:,.2f} ({count_mode}): {total_hits:,}")
     print(f"Timezone tampilan   : {time_label} (broker +{TIME_OFFSET_HOURS} jam)")
     print(f"Jumlah tanggal unik : {all_df['date_only'].nunique():,}")
     print(f"Overall hit rate    : {overall_rate:.2f}% ({total_hits:,}/{len(all_df):,})")
@@ -509,7 +531,7 @@ def main() -> int:
     print("\n=== Top file sumber event ===")
     print(file_counts.head(10).to_string())
 
-    print("\n=== Top tanggal yang terkena MAX_DD ===")
+    print("\n=== Top tanggal yang terkena threshold ===")
     date_summary = (
         event_df.groupby("date_wib", as_index=False)
         .agg(event_count=("dd", "size"), max_dd=("dd", "max"))
@@ -527,7 +549,7 @@ def main() -> int:
     )
 
     if plot_hourly_view:
-        plot_analysis(hour_summary, severity_summary, day_hour_counts, max_dd, input_folder, input_pattern, time_label)
+        plot_analysis(hour_summary, severity_summary, day_hour_counts, max_dd, count_mode, input_folder, input_pattern, time_label)
 
     return 0
 

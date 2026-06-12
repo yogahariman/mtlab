@@ -12,11 +12,11 @@ import pandas as pd
 # Konfigurasi utama
 # =========================
 # INPUT_FOLDER = Path(r"/Drive/E/mt5")
-INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_PATTERN = "t1_*.csv"
+INPUT_FOLDER = Path(r"/home/rfi212/Documents/mt5")
+INPUT_PATTERN = "all.csv"
 INPUT_FILES: list[Path] = []
 
-INITIAL_CAPITAL = 30_000.0
+INITIAL_CAPITAL = 1500.0
 WEEKDAYS_ONLY = True
 USE_BALANCE_FOR_DAILY_PNL = True
 

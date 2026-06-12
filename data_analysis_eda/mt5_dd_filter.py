@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -12,13 +12,15 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 # 1) Isi INPUT_FILES manual, atau
 # 2) Kosongkan INPUT_FILES dan pakai INPUT_FOLDER + INPUT_PATTERN.
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_FOLDER = Path(r"/Drive/E/mt5")
-# INPUT_PATTERN = "b900_*.csv"
-INPUT_PATTERN = "2020_gm_900g_5m_dd0.csv"
+INPUT_FOLDER = Path(r"/home/rfi212/Documents/mt5")
+INPUT_PATTERN = "all.csv"
 INPUT_FILES: List[Path] = []
 
 # Hardcode max DD di sini.
-MAX_DD = 10_000
+MAX_DD = 1500.0
+
+# Konversi broker -> WIB. Contoh: 00.00 broker = 04.00 WIB.
+TIME_OFFSET_HOURS = 4
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -70,6 +72,21 @@ def to_float(value: str) -> Optional[float]:
             return None
 
 
+def parse_broker_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+    raw = f"{date_str} {time_str}"
+    for fmt in (
+        "%Y.%m.%d %H:%M:%S",
+        "%Y.%m.%d %H:%M",
+        "%Y.%m.%d %H.%M.%S",
+        "%Y.%m.%d %H.%M",
+    ):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def parse_row(row: List[str]) -> Optional[Tuple[str, str, float, float, float]]:
     if not row:
         return None
@@ -98,13 +115,6 @@ def parse_row(row: List[str]) -> Optional[Tuple[str, str, float, float, float]]:
         return None
 
     return date_str, time_str, balance, equity, dep_load
-
-
-def sort_date_key(date_str: str):
-    try:
-        return datetime.strptime(date_str, "%Y.%m.%d")
-    except ValueError:
-        return datetime.max
 
 
 def read_rows(path: Path):
@@ -139,33 +149,36 @@ def main() -> int:
         return 0
 
     total_rows = 0
-    filtered_dates = set()
-    date_to_max_dd = {}
+    event_rows = {}
 
     for path in files:
         for date_str, time_str, balance, equity, dep_load in read_rows(path):
             dd = balance - equity
             total_rows += 1
-            if dd >= MAX_DD:
-                filtered_dates.add(date_str)
-                prev_max = date_to_max_dd.get(date_str)
-                if prev_max is None or dd > prev_max:
-                    date_to_max_dd[date_str] = dd
+            dt = parse_broker_datetime(date_str, time_str)
+            if dt is None:
+                continue
+            dt_wib = dt + timedelta(hours=TIME_OFFSET_HOURS)
 
-    sorted_dates = sorted(filtered_dates, key=sort_date_key)
+            if dd >= MAX_DD:
+                prev_max = event_rows.get(dt_wib)
+                if prev_max is None or dd > prev_max:
+                    event_rows[dt_wib] = dd
+
+    sorted_events = sorted(event_rows.items(), key=lambda item: item[0])
 
     print(f"Folder input     : {INPUT_FOLDER}")
     print(f"Pattern input    : {INPUT_PATTERN}")
     print(f"File dibaca      : {len(files)}")
     print(f"Total baris valid: {total_rows}")
-    print(f"Tanggal unik DD>={MAX_DD}: {len(sorted_dates)}")
+    print(f"Event DD>={MAX_DD}: {len(sorted_events)}")
 
-    if sorted_dates:
-        print("\n=== Daftar tanggal terfilter (date, max_dd) ===")
-        for d in sorted_dates:
-            print(f"{d}, {date_to_max_dd[d]:.2f}")
+    if sorted_events:
+        print("\n=== Daftar event terfilter (date_wib, hour_wib, max_dd) ===")
+        for dt_wib, max_dd in sorted_events:
+            print(f"{dt_wib.strftime('%Y.%m.%d')}, {dt_wib.strftime('%H:%M:%S')}, {max_dd:.2f}")
     else:
-        print("\nTidak ada tanggal yang memenuhi filter DD.")
+        print("\nTidak ada event yang memenuhi filter DD.")
 
     return 0
 

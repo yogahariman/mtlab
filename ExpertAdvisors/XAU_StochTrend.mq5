@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.13"
+#property version   "1.14"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -101,8 +101,8 @@ input string InpTelegramChatId            = "1448627275";
 
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = true;
-input ETimeMode InpTimeMode               = TIME_MODE_BROKER;
-input string InpPauseWindows              = "0:00-5:00;13:00-18:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
+input ETimeMode InpTimeMode               = TIME_MODE_WIB;
+input string InpPauseWindows              = "4:00-9:00;12:00-13:00;19:00-22:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 CTrade trade;
 string g_symbol = "";
@@ -597,8 +597,8 @@ void SendTelegramEvent(const string action, const double lot)
 
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string msg =
-      "[XAU_StochTrend] " + action + "\n" +
       "Broker: " + broker + "\n" +
+      "Action: " + action + "\n" +
       "Lot: " + DoubleToString(lot, 2);
 
    SendTelegramMessage(msg);
