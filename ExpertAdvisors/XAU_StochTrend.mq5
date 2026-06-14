@@ -86,12 +86,13 @@ input double InpOverbought                = 80.0;
 input double InpOversold                  = 20.0;
 
 input group "Grid Martingale"
-input string InpLotTable                  = "0.10;0.20;0.20;0.30";
+// input string InpLotTable                  = "0.10;0.20;0.20;0.30"; //dd=1200;grid=8
+input string InpLotTable                  = "0.10;0.10;0.10;0.20;0.30"; //dd=800;grid=5
 input double InpGridDistance              = 8.00;  // Price distance XAU
 input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
 input double InpXauMoneyPerPriceUnit      = 100.0; // 1 lot profit for XAU move 1.00
-input double InpMaxDrawdownMoney          = 3000.00;
+input double InpMaxDrawdownMoney          = 800.00;
 input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
 
 input group "Telegram Alerts"
