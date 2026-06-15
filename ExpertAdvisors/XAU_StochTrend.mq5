@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.14"
+#property version   "1.15"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -86,13 +86,12 @@ input double InpOverbought                = 80.0;
 input double InpOversold                  = 20.0;
 
 input group "Grid Martingale"
-// input string InpLotTable                  = "0.10;0.20;0.20;0.30"; //dd=1200;grid=8
-input string InpLotTable                  = "0.10;0.10;0.10;0.20;0.30"; //dd=800;grid=5
+input string InpLotTable                  = "0.10;0.20;0.20;0.30";
 input double InpGridDistance              = 8.00;  // Price distance XAU
 input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
-input double InpXauMoneyPerPriceUnit      = 100.0; // 1 lot profit for XAU move 1.00
-input double InpMaxDrawdownMoney          = 800.00;
+input double InpXauMoneyPerPriceUnit      = 100.0; // Referensi profit 1 lot untuk XAU bergerak 1.00 price unit. Untuk XM biasanya nilai efektif ~ /100.
+input double InpMaxDrawdownMoney          = 960.00; // Batas max drawdown basket dalam uang akun. Untuk XM biasanya nilai efektif ~ /100.
 input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
 
 input group "Telegram Alerts"
