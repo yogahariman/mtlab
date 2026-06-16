@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.15"
+#property version   "1.16"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -590,7 +590,109 @@ bool SendTelegramMessage(const string text)
    return true;
 }
 
-void SendTelegramEvent(const string action, const double lot)
+datetime TelegramReportTime()
+{
+   datetime nowTime = TimeTradeServer();
+   if(nowTime <= 0)
+      nowTime = TimeLocal();
+   return nowTime;
+}
+
+datetime DayStartFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   return StructToTime(dt);
+}
+
+datetime WeekStartFromTime(const datetime whenTime)
+{
+   MqlDateTime dt;
+   TimeToStruct(whenTime, dt);
+   const int daysBack = (dt.day_of_week + 6) % 7; // Monday = 0, Sunday = 6
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   dt.day -= daysBack;
+   return StructToTime(dt);
+}
+
+double TodayClosedProfit(const datetime nowTime)
+{
+   const datetime dayStart = DayStartFromTime(nowTime);
+   double total = 0.0;
+
+   if(!HistorySelect(dayStart, nowTime))
+   {
+      Print("HistorySelect fail | from=", TimeToString(dayStart),
+            " | to=", TimeToString(nowTime),
+            " | err=", GetLastError());
+      return 0.0;
+   }
+
+   const int dealsTotal = HistoryDealsTotal();
+   for(int i = 0; i < dealsTotal; i++)
+   {
+      const ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+
+      const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+         continue;
+
+      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      total += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      total += HistoryDealGetDouble(ticket, DEAL_SWAP);
+      total += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+   }
+
+   return total;
+}
+
+double WeeklyClosedProfit(const datetime nowTime)
+{
+   const datetime weekStart = WeekStartFromTime(nowTime);
+   double total = 0.0;
+
+   if(!HistorySelect(weekStart, nowTime))
+   {
+      Print("HistorySelect fail | from=", TimeToString(weekStart),
+            " | to=", TimeToString(nowTime),
+            " | err=", GetLastError());
+      return 0.0;
+   }
+
+   const int dealsTotal = HistoryDealsTotal();
+   for(int i = 0; i < dealsTotal; i++)
+   {
+      const ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+
+      const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+         continue;
+
+      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      total += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      total += HistoryDealGetDouble(ticket, DEAL_SWAP);
+      total += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+   }
+
+   return total;
+}
+
+void SendTelegramEvent(const int layerNumber)
 {
    if(IsTesterRun() || !InpUseTelegramAlerts)
       return;
@@ -598,8 +700,46 @@ void SendTelegramEvent(const string action, const double lot)
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string msg =
       "Broker: " + broker + "\n" +
-      "Action: " + action + "\n" +
-      "Lot: " + DoubleToString(lot, 2);
+      "Layer: " + (layerNumber > 0 ? (string)layerNumber : "-");
+
+   SendTelegramMessage(msg);
+}
+
+void SendBasketTpCloseTelegram()
+{
+   if(IsTesterRun() || !InpUseTelegramAlerts)
+      return;
+
+   const datetime nowTime = TelegramReportTime();
+   const double dayProfit = TodayClosedProfit(nowTime);
+   const double weekProfit = WeeklyClosedProfit(nowTime);
+   const string broker = AccountInfoString(ACCOUNT_COMPANY);
+   const string msg =
+      "Broker: " + broker + "\n" +
+      "TP Close: D " + DoubleToString(dayProfit, 2) +
+      " / W " + DoubleToString(weekProfit, 2);
+
+   SendTelegramMessage(msg);
+}
+
+void SendMaxDdHitTelegram(const string side, const double basketLoss, const string actionTaken)
+{
+   if(IsTesterRun() || !InpUseTelegramAlerts)
+      return;
+
+   const datetime nowTime = TelegramReportTime();
+   const double dayProfit = TodayClosedProfit(nowTime);
+   const double weekProfit = WeeklyClosedProfit(nowTime);
+   const string broker = AccountInfoString(ACCOUNT_COMPANY);
+   const string msg =
+      "Broker: " + broker + "\n" +
+      "Action: Max DD Hit\n" +
+      "Side: " + side + "\n" +
+      "Basket Loss: " + DoubleToString(basketLoss, 2) + "\n" +
+      "Max DD Limit: " + DoubleToString(InpMaxDrawdownMoney, 2) + "\n" +
+      "Day Profit: " + DoubleToString(dayProfit, 2) + "\n" +
+      "Week Profit: " + DoubleToString(weekProfit, 2) + "\n" +
+      "Action Taken: " + actionTaken;
 
    SendTelegramMessage(msg);
 }
@@ -1145,7 +1285,7 @@ bool GetLayerLot(const int layerIndex, double &lot)
    return (lot > 0.0);
 }
 
-bool OpenMarket(const bool isBuy, const double lot, const string comment)
+bool OpenMarket(const bool isBuy, const double lot, const int layerNumber, const string comment)
 {
    if(!IsTradeAllowed() || !SpreadOK())
       return false;
@@ -1178,17 +1318,13 @@ bool OpenMarket(const bool isBuy, const double lot, const string comment)
          " | comment=", comment);
    g_lastTradeTime = TimeCurrent();
 
-   string action = "Order Open";
    if(StringFind(comment, "First") >= 0)
    {
-      action = "First Entry Open";
       g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
       ResetStochasticPending();
    }
-   else if(StringFind(comment, "Grid") >= 0)
-      action = "Grid Layer Add";
 
-   SendTelegramEvent(action, volume);
+   SendTelegramEvent(layerNumber);
    return true;
 }
 
@@ -1201,7 +1337,7 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpBuyMagic, POSITION_TYPE_BUY))
       {
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "basket_tp", false);
-         SendTelegramEvent("Basket TP Close", 0.0);
+         SendBasketTpCloseTelegram();
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
@@ -1210,9 +1346,10 @@ void ManageBasketRiskAndExit()
          const string ddAction = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY
             ? "close_and_pause_next_day"
             : "close_and_pause_manual");
+         const string actualActionTaken = (pauseAfterClose ? ddAction : "close_and_continue");
          CloseBasket(InpBuyMagic, POSITION_TYPE_BUY, "max_dd", pauseAfterClose);
-         SendTelegramEvent("Max DD Hit", 0.0);
-         Print("Max DD hit on BUY basket. Action=", (pauseAfterClose ? ddAction : "close_and_continue"));
+         SendMaxDdHitTelegram("BUY", profit, actualActionTaken);
+         Print("Max DD hit on BUY basket. Action=", actualActionTaken);
          return;
       }
    }
@@ -1224,7 +1361,7 @@ void ManageBasketRiskAndExit()
       if(BasketTpHit(InpSellMagic, POSITION_TYPE_SELL))
       {
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "basket_tp", false);
-         SendTelegramEvent("Basket TP Close", 0.0);
+         SendBasketTpCloseTelegram();
          return;
       }
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
@@ -1233,9 +1370,10 @@ void ManageBasketRiskAndExit()
          const string ddAction = (InpMaxDdResumeMode == MAX_DD_PAUSE_NEXT_DAY
             ? "close_and_pause_next_day"
             : "close_and_pause_manual");
+         const string actualActionTaken = (pauseAfterClose ? ddAction : "close_and_continue");
          CloseBasket(InpSellMagic, POSITION_TYPE_SELL, "max_dd", pauseAfterClose);
-         SendTelegramEvent("Max DD Hit", 0.0);
-         Print("Max DD hit on SELL basket. Action=", (pauseAfterClose ? ddAction : "close_and_continue"));
+         SendMaxDdHitTelegram("SELL", profit, actualActionTaken);
+         Print("Max DD hit on SELL basket. Action=", actualActionTaken);
          return;
       }
    }
@@ -1271,7 +1409,7 @@ void ManageGrid()
 
       const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
       if(bid > 0.0 && bid <= anchorPrice - InpGridDistance)
-         OpenMarket(true, nextLot, "XAU_StochTrendGridBuy");
+         OpenMarket(true, nextLot, buyCount + 1, "XAU_StochTrendGridBuy");
       return;
    }
 
@@ -1287,7 +1425,7 @@ void ManageGrid()
 
       const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
       if(ask > 0.0 && ask >= anchorPrice + InpGridDistance)
-         OpenMarket(false, nextLot, "XAU_StochTrendGridSell");
+         OpenMarket(false, nextLot, sellCount + 1, "XAU_StochTrendGridSell");
    }
 }
 
@@ -1344,12 +1482,12 @@ void CheckFirstEntryOnNewBar()
 
    if(BuySignal())
    {
-      OpenMarket(true, firstLot, "XAU_StochTrendFirstBuy");
+      OpenMarket(true, firstLot, 1, "XAU_StochTrendFirstBuy");
       return;
    }
 
    if(SellSignal())
-      OpenMarket(false, firstLot, "XAU_StochTrendFirstSell");
+      OpenMarket(false, firstLot, 1, "XAU_StochTrendFirstSell");
 }
 
 int OnInit()
