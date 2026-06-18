@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Start MT5 All
+Type=Application
+Exec=/home/admin/Desktop/start_mt5.sh
+Icon=/home/admin/.wine/drive_c/Program Files/MetaTrader 5/Terminal.ico
+Terminal=false
+StartupNotify=true
