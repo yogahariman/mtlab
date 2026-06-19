@@ -122,6 +122,12 @@ bool g_pendingStochBuy = false;
 bool g_pendingStochSell = false;
 datetime g_pendingStochBuyBarTime = 0;
 datetime g_pendingStochSellBarTime = 0;
+datetime g_profitCacheDayStart = 0;
+datetime g_profitCacheWeekStart = 0;
+double g_profitCacheDay = 0.0;
+double g_profitCacheWeek = 0.0;
+double g_profitCacheAll = 0.0;
+datetime g_profitCacheLastRefreshTime = 0;
 bool g_closeLockActive = false;
 long g_closeLockMagic = 0;
 ENUM_POSITION_TYPE g_closeLockType = POSITION_TYPE_BUY;
@@ -620,15 +626,14 @@ datetime WeekStartFromTime(const datetime whenTime)
    return StructToTime(dt);
 }
 
-double TodayClosedProfit(const datetime nowTime)
+double ClosedProfitBetween(const datetime fromTime, const datetime toTime)
 {
-   const datetime dayStart = DayStartFromTime(nowTime);
    double total = 0.0;
 
-   if(!HistorySelect(dayStart, nowTime))
+   if(!HistorySelect(fromTime, toTime))
    {
-      Print("HistorySelect fail | from=", TimeToString(dayStart),
-            " | to=", TimeToString(nowTime),
+      Print("HistorySelect fail | from=", TimeToString(fromTime),
+            " | to=", TimeToString(toTime),
             " | err=", GetLastError());
       return 0.0;
    }
@@ -656,40 +661,73 @@ double TodayClosedProfit(const datetime nowTime)
    return total;
 }
 
+void RefreshClosedProfitCache(const datetime nowTime)
+{
+   g_profitCacheDayStart = DayStartFromTime(nowTime);
+   g_profitCacheWeekStart = WeekStartFromTime(nowTime);
+   g_profitCacheDay = ClosedProfitBetween(g_profitCacheDayStart, nowTime);
+   g_profitCacheWeek = ClosedProfitBetween(g_profitCacheWeekStart, nowTime);
+   g_profitCacheAll = ClosedProfitBetween(0, nowTime);
+   g_profitCacheLastRefreshTime = nowTime;
+}
+
+void EnsureClosedProfitCache(const datetime nowTime)
+{
+   const datetime dayStart = DayStartFromTime(nowTime);
+   const datetime weekStart = WeekStartFromTime(nowTime);
+
+   if(g_profitCacheDayStart != dayStart || g_profitCacheWeekStart != weekStart)
+      RefreshClosedProfitCache(nowTime);
+}
+
+void UpdateClosedProfitCacheFromDeal(const ulong ticket)
+{
+   if(ticket == 0)
+      return;
+
+   const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+   if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+      return;
+
+   const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
+      return;
+
+   const datetime dealTime = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+   if(dealTime <= 0)
+      return;
+   if(g_profitCacheLastRefreshTime > 0 && dealTime <= g_profitCacheLastRefreshTime)
+      return;
+
+   const double delta = HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                      + HistoryDealGetDouble(ticket, DEAL_SWAP)
+                      + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+
+   if(g_profitCacheDayStart > 0 && dealTime >= g_profitCacheDayStart)
+      g_profitCacheDay += delta;
+
+   if(g_profitCacheWeekStart > 0 && dealTime >= g_profitCacheWeekStart)
+      g_profitCacheWeek += delta;
+
+   g_profitCacheAll += delta;
+}
+
+double TodayClosedProfit(const datetime nowTime)
+{
+   EnsureClosedProfitCache(nowTime);
+   return g_profitCacheDay;
+}
+
 double WeeklyClosedProfit(const datetime nowTime)
 {
-   const datetime weekStart = WeekStartFromTime(nowTime);
-   double total = 0.0;
+   EnsureClosedProfitCache(nowTime);
+   return g_profitCacheWeek;
+}
 
-   if(!HistorySelect(weekStart, nowTime))
-   {
-      Print("HistorySelect fail | from=", TimeToString(weekStart),
-            " | to=", TimeToString(nowTime),
-            " | err=", GetLastError());
-      return 0.0;
-   }
-
-   const int dealsTotal = HistoryDealsTotal();
-   for(int i = 0; i < dealsTotal; i++)
-   {
-      const ulong ticket = HistoryDealGetTicket(i);
-      if(ticket == 0)
-         continue;
-
-      const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
-      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
-         continue;
-
-      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
-      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
-         continue;
-
-      total += HistoryDealGetDouble(ticket, DEAL_PROFIT);
-      total += HistoryDealGetDouble(ticket, DEAL_SWAP);
-      total += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
-   }
-
-   return total;
+double AllClosedProfit(const datetime nowTime)
+{
+   EnsureClosedProfitCache(nowTime);
+   return g_profitCacheAll;
 }
 
 void SendTelegramEvent(const int layerNumber)
@@ -699,7 +737,7 @@ void SendTelegramEvent(const int layerNumber)
 
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string msg =
-      "Broker: " + broker + "\n" +
+      "BK: " + broker + "\n" +
       "Layer: " + (layerNumber > 0 ? (string)layerNumber : "-");
 
    SendTelegramMessage(msg);
@@ -711,13 +749,16 @@ void SendBasketTpCloseTelegram()
       return;
 
    const datetime nowTime = TelegramReportTime();
+   RefreshClosedProfitCache(nowTime);
    const double dayProfit = TodayClosedProfit(nowTime);
    const double weekProfit = WeeklyClosedProfit(nowTime);
+   const double allProfit = AllClosedProfit(nowTime);
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string msg =
-      "Broker: " + broker + "\n" +
-      "TP Close: D " + DoubleToString(dayProfit, 2) +
-      " / W " + DoubleToString(weekProfit, 2);
+      "BK: " + broker + "\n" +
+      "TP: " + DoubleToString(dayProfit, 2) +
+      " / " + DoubleToString(weekProfit, 2) +
+      " / " + DoubleToString(allProfit, 2);
 
    SendTelegramMessage(msg);
 }
@@ -728,6 +769,7 @@ void SendMaxDdHitTelegram(const string side, const double basketLoss, const stri
       return;
 
    const datetime nowTime = TelegramReportTime();
+   RefreshClosedProfitCache(nowTime);
    const double dayProfit = TodayClosedProfit(nowTime);
    const double weekProfit = WeeklyClosedProfit(nowTime);
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
@@ -1543,6 +1585,8 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   RefreshClosedProfitCache(TelegramReportTime());
+
    Print("XAU_StochTrend initialized | symbol=", g_symbol,
          " | MA type=", (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA"),
          " | trendMode=", (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")),
@@ -1567,6 +1611,27 @@ void OnDeinit(const int reason)
    if(g_fastMaHandle != INVALID_HANDLE) IndicatorRelease(g_fastMaHandle);
    if(g_slowMaHandle != INVALID_HANDLE) IndicatorRelease(g_slowMaHandle);
    if(g_stochHandle != INVALID_HANDLE) IndicatorRelease(g_stochHandle);
+}
+
+void OnTradeTransaction(const MqlTradeTransaction& trans,
+                        const MqlTradeRequest& request,
+                        const MqlTradeResult& result)
+{
+   if(IsTesterRun())
+      return;
+
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   if(trans.deal == 0)
+      return;
+
+   if(!HistoryDealSelect(trans.deal))
+      return;
+
+   const datetime nowTime = TelegramReportTime();
+   EnsureClosedProfitCache(nowTime);
+   UpdateClosedProfitCacheFromDeal(trans.deal);
 }
 
 void OnTimer()
