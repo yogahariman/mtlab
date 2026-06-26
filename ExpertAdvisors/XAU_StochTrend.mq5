@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.16"
+#property version   "1.20"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -92,7 +92,7 @@ input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
 input double InpXauMoneyPerPriceUnit      = 100.0; // Referensi profit 1 lot untuk XAU bergerak 1.00 price unit. Untuk XM biasanya nilai efektif ~ /100.
 input double InpMaxDrawdownMoney          = 960.00; // Batas max drawdown basket dalam uang akun. Untuk XM biasanya nilai efektif ~ /100.
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
 
 input group "Telegram Alerts"
 input bool   InpUseTelegramAlerts         = true;
@@ -102,7 +102,7 @@ input string InpTelegramChatId            = "1448627275";
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = true;
 input ETimeMode InpTimeMode               = TIME_MODE_WIB;
-input string InpPauseWindows              = "4:00-9:00;12:00-13:00;19:00-22:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
+input string InpPauseWindows              = "1:00-9:00;12:00-13:00;18:00-22:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 CTrade trade;
 string g_symbol = "";

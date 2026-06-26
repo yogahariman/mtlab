@@ -16,6 +16,6 @@ launch() {
 for i in $(seq "${START_INDEX}" "${END_INDEX}"); do
   launch "${i}"
   if [ "${i}" -lt "${END_INDEX}" ]; then
-    sleep 10
+    sleep 15
   fi
 done

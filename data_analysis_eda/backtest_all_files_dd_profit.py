@@ -20,8 +20,6 @@ from typing import Iterable
 INPUT_FOLDER = Path(r"/home/rfi212/Documents/mt5")
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
 INPUT_PATTERN = "*.csv"
-# INPUT_PATTERN = "ea_profit_sakti*.csv"
-# INPUT_PATTERN = "202509-20260604_*.csv"
 INPUT_FILES: list[Path] = []
 
 WEEKDAYS_ONLY = True
