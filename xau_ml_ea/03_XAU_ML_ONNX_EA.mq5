@@ -1,32 +1,35 @@
 //+------------------------------------------------------------------+
-//|                                                03_XAU_ML_ONNX_EA.mq5 |
-//|                  XAU multi-timeframe machine-learning ONNX EA      |
+//|                                       03_XAU_ML_ONNX_EA.mq5      |
+//|           Stochastic gate + ONNX validation for XAU first entry  |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.10"
-#property description "Runs a multi-timeframe ONNX model on every closed M5 candle."
+#property version   "1.00"
+#property description "Uses Stochastic as a gate and ML as the final first-entry validator."
 
 #include <Trade/Trade.mqh>
 #include <Trade/SymbolInfo.mqh>
 #include <Indicators/Trend.mqh>
 #include <Indicators/Oscilators.mqh>
 
-#define ENTRY_TIMEFRAME PERIOD_M5
-#define TIMEFRAME_COUNT 5
+#define ENTRY_TIMEFRAME PERIOD_M1
+#define TIMEFRAME_COUNT 2
 #define FEATURES_PER_TIMEFRAME 14
+#define STOCH_FEATURE_COUNT 6
 #define TIME_FEATURE_COUNT 4
-#define FEATURE_COUNT 74
+#define FEATURE_COUNT (TIMEFRAME_COUNT * FEATURES_PER_TIMEFRAME + STOCH_FEATURE_COUNT + TIME_FEATURE_COUNT)
+#define TWO_PI 6.283185307179586
 
-#resource "model_xau_ml.onnx" as uchar ModelBuffer[]
+#resource "model_xau_stoch_ml.onnx" as uchar ModelBuffer[]
 
 input string InpSymbol = "XAUUSD";
 input double InpLots = 0.01;
-input double InpThreshold = 0.50;
-input int InpDirection = 1;
+input double InpMlThreshold = 0.55;
+input int InpOversold = 20;
+input int InpOverbought = 80;
 input int InpStopLossPoints = 800;
 input int InpTakeProfitPoints = 1200;
 input int InpMaxSpreadPoints = 80;
-input ulong InpMagic = 26051001;
+input ulong InpMagic = 26051002;
 
 CTrade Trade;
 CSymbolInfo Symb;
@@ -39,13 +42,11 @@ CiMACD Macd[TIMEFRAME_COUNT];
 vector<float> Inputs(FEATURE_COUNT);
 vector<float> Forecast(1);
 long OnnxHandle = INVALID_HANDLE;
+long StochHandle = INVALID_HANDLE;
 
 ENUM_TIMEFRAMES ModelTimeframes[TIMEFRAME_COUNT] = {
-   PERIOD_M5,
-   PERIOD_M15,
-   PERIOD_H1,
-   PERIOD_H4,
-   PERIOD_D1
+   PERIOD_M1,
+   PERIOD_M5
 };
 
 //+------------------------------------------------------------------+
@@ -97,12 +98,22 @@ int OnInit()
       Macd[i].BufferResize(3);
      }
 
+   StochHandle = iStochastic(Symb.Name(), ENTRY_TIMEFRAME, 14, 3, 3, MODE_SMA, STO_LOWHIGH);
+   if(StochHandle == INVALID_HANDLE)
+     {
+      Print("iStochastic create error ", GetLastError());
+      OnnxRelease(OnnxHandle);
+      return INIT_FAILED;
+     }
+
    return INIT_SUCCEEDED;
   }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   if(StochHandle != INVALID_HANDLE)
+      IndicatorRelease(StochHandle);
    if(OnnxHandle != INVALID_HANDLE)
       OnnxRelease(OnnxHandle);
   }
@@ -118,7 +129,8 @@ void OnTick()
    if(Symb.Spread() > InpMaxSpreadPoints)
       return;
 
-   if(!PrepareInputs())
+   int candidate_direction = 0;
+   if(!PrepareInputs(candidate_direction))
       return;
 
    if(!OnnxRun(OnnxHandle, ONNX_NO_CONVERSION, Inputs, Forecast))
@@ -127,15 +139,18 @@ void OnTick()
       return;
      }
 
-   const double signal = double(Forecast[0]) * InpDirection;
-   if(signal >= InpThreshold)
-      OpenOrFlip(POSITION_TYPE_BUY);
-   else if(signal <= -InpThreshold)
-      OpenOrFlip(POSITION_TYPE_SELL);
+   const double score = double(Forecast[0]);
+   if(score < InpMlThreshold)
+      return;
+
+   if(candidate_direction > 0)
+      OpenSinglePosition(POSITION_TYPE_BUY);
+   else if(candidate_direction < 0)
+      OpenSinglePosition(POSITION_TYPE_SELL);
   }
 
 //+------------------------------------------------------------------+
-bool PrepareInputs()
+bool PrepareInputs(int &candidate_direction)
   {
    int k = 0;
    datetime entry_closed_time = 0;
@@ -146,14 +161,50 @@ bool PrepareInputs()
          return false;
      }
 
+   if(!AppendStochasticGate(k, candidate_direction))
+      return false;
+
    MqlDateTime dt;
    TimeToStruct(entry_closed_time, dt);
-   Inputs[k++] = float(MathSin(2.0 * M_PI * dt.hour / 24.0));
-   Inputs[k++] = float(MathCos(2.0 * M_PI * dt.hour / 24.0));
-   Inputs[k++] = float(MathSin(2.0 * M_PI * dt.day_of_week / 7.0));
-   Inputs[k++] = float(MathCos(2.0 * M_PI * dt.day_of_week / 7.0));
+   Inputs[k++] = float(MathSin(TWO_PI * dt.hour / 24.0));
+   Inputs[k++] = float(MathCos(TWO_PI * dt.hour / 24.0));
+   Inputs[k++] = float(MathSin(TWO_PI * dt.day_of_week / 7.0));
+   Inputs[k++] = float(MathCos(TWO_PI * dt.day_of_week / 7.0));
 
    return k == FEATURE_COUNT;
+  }
+
+//+------------------------------------------------------------------+
+bool AppendStochasticGate(int &k, int &candidate_direction)
+  {
+   double stoch_k[3];
+   double stoch_d[3];
+   ArraySetAsSeries(stoch_k, true);
+   ArraySetAsSeries(stoch_d, true);
+
+   if(CopyBuffer(StochHandle, 0, 1, 3, stoch_k) < 3 ||
+      CopyBuffer(StochHandle, 1, 1, 3, stoch_d) < 3)
+     {
+      Print("CopyBuffer stochastic error ", GetLastError());
+      return false;
+     }
+
+   const double k0 = stoch_k[0];
+   const double d0 = stoch_d[0];
+   if(k0 < InpOversold)
+      candidate_direction = 1;
+   else if(k0 > InpOverbought)
+      candidate_direction = -1;
+   else
+      return false;
+
+   Inputs[k++] = float(k0);
+   Inputs[k++] = float(d0);
+   Inputs[k++] = float(k0 - d0);
+   Inputs[k++] = float(k0 - double(InpOversold));
+   Inputs[k++] = float(k0 - double(InpOverbought));
+   Inputs[k++] = float(candidate_direction);
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -219,7 +270,7 @@ bool AppendTimeframeFeatures(const int tf_index, int &k, datetime &entry_closed_
 bool IsNewEntryBar()
   {
    static datetime last_bar_time = 0;
-   const datetime bar_time = iTime(Symb.Name(), ENTRY_TIMEFRAME, 0);
+      const datetime bar_time = iTime(Symb.Name(), ENTRY_TIMEFRAME, 0);
    if(bar_time <= last_bar_time)
       return false;
 
@@ -228,14 +279,14 @@ bool IsNewEntryBar()
   }
 
 //+------------------------------------------------------------------+
-void OpenOrFlip(const ENUM_POSITION_TYPE desired_type)
+void OpenSinglePosition(const ENUM_POSITION_TYPE desired_type)
   {
    bool has_desired = false;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       if(PositionGetSymbol(i) != Symb.Name())
          continue;
-      if(PositionGetInteger(POSITION_MAGIC) != InpMagic)
+      if(PositionGetInteger(POSITION_MAGIC) != (long)InpMagic)
          continue;
 
       const ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
@@ -249,6 +300,8 @@ void OpenOrFlip(const ENUM_POSITION_TYPE desired_type)
       return;
 
    const double point = Symb.Point();
+   Symb.RefreshRates();
+
    if(desired_type == POSITION_TYPE_BUY)
      {
       const double sl = InpStopLossPoints > 0 ? Symb.Bid() - InpStopLossPoints * point : 0.0;

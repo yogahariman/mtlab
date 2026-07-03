@@ -8,15 +8,14 @@ import pytz
 
 
 SYMBOL = "XAUUSD"
-TIMEFRAMES_TO_DOWNLOAD = ["M5", "M15", "H1", "H4", "D1"]
+TIMEFRAMES_TO_DOWNLOAD = ["M1", "M5"]
 FROM_YEAR = 2015
 FALLBACK_BARS = 100_000
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 # Isi kalau pakai mt5linux/Wine. Biarkan None kalau pakai package MetaTrader5 native.
-MT5_PATH = None
-# MT5_PATH = "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
-
+# MT5_PATH = None
+MT5_PATH = "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
 
 TIMEFRAMES = {
     "M1": "TIMEFRAME_M1",

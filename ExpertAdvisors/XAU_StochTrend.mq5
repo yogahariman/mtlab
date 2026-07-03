@@ -4,7 +4,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.20"
+#define EA_VERSION "1.22"
+#property version   EA_VERSION
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -57,8 +58,8 @@ enum EStochEntryMode
 
 input group "General"
 input ETradeMode InpTradeMode             = TRADE_BOTH_SINGLE;
-input long   InpBuyMagic                  = 333333;
-input long   InpSellMagic                 = 444444;
+input long   InpBuyMagic                  = 111111;
+input long   InpSellMagic                 = 222222;
 input double InpMaxSpread                 = 0.40;  // Price distance XAU
 input double InpMaxSlippage               = 0.30;  // Price distance XAU
 input bool   InpUseCloseLock              = true;
@@ -90,8 +91,10 @@ input string InpLotTable                  = "0.10;0.20;0.20;0.30";
 input double InpGridDistance              = 8.00;  // Price distance XAU
 input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
-input double InpXauMoneyPerPriceUnit      = 100.0; // Referensi profit 1 lot untuk XAU bergerak 1.00 price unit. Untuk XM biasanya nilai efektif ~ /100.
-input double InpMaxDrawdownMoney          = 960.00; // Batas max drawdown basket dalam uang akun. Untuk XM biasanya nilai efektif ~ /100.
+input double InpXauMoneyPerPriceUnit      = 100.0; // XM=1.00; Referensi profit 1 lot untuk XAU bergerak 1.00 price unit. Untuk XM biasanya nilai efektif ~ /100.
+
+input group "Stop Loss / Drawdown"
+input double InpMaxDrawdownMoney          = 960.00; // XM=9.60; Batas max drawdown basket dalam uang akun. Untuk XM biasanya nilai efektif ~ /100.
 input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
 
 input group "Telegram Alerts"
@@ -607,7 +610,7 @@ datetime TelegramReportTime()
 datetime DayStartFromTime(const datetime whenTime)
 {
    MqlDateTime dt;
-   TimeToStruct(whenTime, dt);
+   ReferenceTimeStruct(whenTime, dt);
    dt.hour = 0;
    dt.min = 0;
    dt.sec = 0;
@@ -616,14 +619,8 @@ datetime DayStartFromTime(const datetime whenTime)
 
 datetime WeekStartFromTime(const datetime whenTime)
 {
-   MqlDateTime dt;
-   TimeToStruct(whenTime, dt);
-   const int daysBack = (dt.day_of_week + 6) % 7; // Monday = 0, Sunday = 6
-   dt.hour = 0;
-   dt.min = 0;
-   dt.sec = 0;
-   dt.day -= daysBack;
-   return StructToTime(dt);
+   // Rolling 7-day window, not calendar week.
+   return (whenTime - 7 * 86400);
 }
 
 double ClosedProfitBetween(const datetime fromTime, const datetime toTime)
@@ -786,9 +783,49 @@ void SendMaxDdHitTelegram(const string side, const double basketLoss, const stri
    SendTelegramMessage(msg);
 }
 
+void SendInitTelegram()
+{
+   if(IsTesterRun() || !InpUseTelegramAlerts)
+      return;
+
+   const datetime nowTime = TelegramReportTime();
+   RefreshClosedProfitCache(nowTime);
+   const string broker = AccountInfoString(ACCOUNT_COMPANY);
+   const string account = AccountInfoString(ACCOUNT_NAME);
+
+   const string msg =
+      "EA Started\n" +
+      "Version: " + EA_VERSION + "\n" +
+      "Broker: " + broker + "\n" +
+      "Account: " + account + "\n" +
+      "Symbol: " + g_symbol + "\n" +
+      "TradeMode: " + (InpTradeMode == TRADE_BUY_ONLY ? "BUY_ONLY" : (InpTradeMode == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH_SINGLE")) + "\n" +
+      "TrendMode: " + (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")) + "\n" +
+      "MA Type: " + (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA") + "\n" +
+      "Grid: " + DoubleToString(InpGridDistance, 2) + "\n" +
+      "LotLayers: " + (string)ArraySize(g_lotTable) + "\n" +
+      "Session: " + TimeModeLabel() + "\n" +
+      "PauseWindows: " + InpPauseWindows + "\n" +
+      "MaxDD: " + DoubleToString(InpMaxDrawdownMoney, 2) + "\n" +
+      "WeeklyClosedProfit: " + DoubleToString(WeeklyClosedProfit(nowTime), 2);
+
+   SendTelegramMessage(msg);
+}
+
 string PositionTypeLabel(const ENUM_POSITION_TYPE type)
 {
    return (type == POSITION_TYPE_BUY ? "BUY" : "SELL");
+}
+
+string TimeModeLabel()
+{
+   if(!InpUseTimeFilter)
+      return "OFF";
+   if(InpTimeMode == TIME_MODE_BROKER)
+      return "BROKER";
+   if(InpTimeMode == TIME_MODE_WIB)
+      return "WIB(UTC+7)";
+   return "UTC";
 }
 
 void ReferenceTimeStruct(const datetime whenTime, MqlDateTime &dt)
@@ -1596,6 +1633,8 @@ int OnInit()
          " | lotLayers=", (string)ArraySize(g_lotTable),
          " | basketTPMode=", (InpBasketTpMode == BASKET_TP_TOTAL_LOT ? "TOTAL_LOT" : "BASE_LOT"),
          " | basketTPPriceMove=", DoubleToString(InpBasketTpPriceMove, 2));
+
+   SendInitTelegram();
 
    if(InpUseCloseLock && InpCloseLockTimerMs > 0)
       EventSetMillisecondTimer(InpCloseLockTimerMs);
