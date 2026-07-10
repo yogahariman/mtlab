@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//| XAU_StochTrend.mq5                                               |
-//| EMA trend + Stochastic crossing + XAU martingale grid basket      |
+//| XAU_StochBBTrend.mq5                                             |
+//| EMA trend + Stochastic + Bollinger Band + XAU martingale grid    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#define EA_VERSION "1.22"
+#define EA_VERSION "1.00"
 #property version   EA_VERSION
 #property strict
 
@@ -71,7 +71,7 @@ input int    InpCloseLockTimerMs          = 300;
 input int    InpMinSecondsBetweenOrders   = 1;
 
 input group "Trend Filter"
-input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_SINGLE_EMA;
+input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_OFF;
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL;
 input int    InpTrendEMAPeriod            = 120;
 input int    InpFastMAPeriod              = 13;
@@ -85,6 +85,11 @@ input int    InpDPeriod                   = 3;
 input int    InpSlowing                   = 3;
 input double InpOverbought                = 80.0;
 input double InpOversold                  = 20.0;
+input int    InpBBPeriod                  = 20;
+input double InpBBDeviation               = 2.0;
+input int    InpBBShift                   = 0;
+input double InpBBPercentBuyMax           = 0.2;
+input double InpBBPercentSellMin          = 0.8;
 
 input group "Grid Martingale"
 input string InpLotTable                  = "0.10;0.20;0.20;0.30";
@@ -115,6 +120,7 @@ datetime g_lastFirstEntryBarTime = 0;
 int g_fastMaHandle = INVALID_HANDLE;
 int g_slowMaHandle = INVALID_HANDLE;
 int g_stochHandle = INVALID_HANDLE;
+int g_bbHandle = INVALID_HANDLE;
 bool g_pausedByMaxDd = false;
 int g_maxDdPausedDayKey = 0;
 bool g_stochBuyArmed = false;
@@ -341,6 +347,90 @@ bool StochasticSellConfirmedAfterClose()
    if(main1 >= signal1)
       return false;
    return true;
+}
+
+bool BollingerPercentB(const int shift, double &percentB)
+{
+   double upper = 0.0, lower = 0.0;
+   if(!GetBufferValue(g_bbHandle, 1, shift, upper))
+      return false;
+   if(!GetBufferValue(g_bbHandle, 2, shift, lower))
+      return false;
+
+   const double range = upper - lower;
+   if(range <= 0.0)
+      return false;
+
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+   if(closePrice <= 0.0)
+      return false;
+
+   percentB = (closePrice - lower) / range;
+   return true;
+}
+
+bool BollingerBuyOK(const int shift)
+{
+   double percentB = 0.0;
+   if(!BollingerPercentB(shift, percentB))
+      return false;
+   return (percentB < InpBBPercentBuyMax);
+}
+
+bool BollingerSellOK(const int shift)
+{
+   double percentB = 0.0;
+   if(!BollingerPercentB(shift, percentB))
+      return false;
+   return (percentB > InpBBPercentSellMin);
+}
+
+bool GetStochasticSnapshot(const int shift, double &mainValue, double &signalValue)
+{
+   if(!GetBufferValue(g_stochHandle, 0, shift, mainValue))
+      return false;
+   if(!GetBufferValue(g_stochHandle, 1, shift, signalValue))
+      return false;
+   return true;
+}
+
+bool GetBollingerSnapshot(const int shift, double &upper, double &middle, double &lower, double &percentB)
+{
+   if(!GetBufferValue(g_bbHandle, 0, shift, middle))
+      return false;
+   if(!GetBufferValue(g_bbHandle, 1, shift, upper))
+      return false;
+   if(!GetBufferValue(g_bbHandle, 2, shift, lower))
+      return false;
+
+   const double range = upper - lower;
+   if(range <= 0.0)
+      return false;
+
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+   if(closePrice <= 0.0)
+      return false;
+
+   percentB = (closePrice - lower) / range;
+   return true;
+}
+
+void LogFirstEntrySnapshot(const bool isBuy, const double execPrice)
+{
+   double stochMain = 0.0, stochSignal = 0.0;
+   double bbUpper = 0.0, bbMiddle = 0.0, bbLower = 0.0, percentB = 0.0;
+   const bool stochOk = GetStochasticSnapshot(InpBBShift, stochMain, stochSignal);
+   const bool bbOk = GetBollingerSnapshot(InpBBShift, bbUpper, bbMiddle, bbLower, percentB);
+
+   Print("First entry snapshot | side=", (isBuy ? "BUY" : "SELL"),
+         " | execPrice=", DoubleToString(execPrice, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)),
+         " | stochK=", (stochOk ? DoubleToString(stochMain, 2) : "n/a"),
+         " | stochD=", (stochOk ? DoubleToString(stochSignal, 2) : "n/a"),
+         " | bbUpper=", (bbOk ? DoubleToString(bbUpper, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | bbMiddle=", (bbOk ? DoubleToString(bbMiddle, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | bbLower=", (bbOk ? DoubleToString(bbLower, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | percentB=", (bbOk ? DoubleToString(percentB, 4) : "n/a"),
+         " | bbShift=", InpBBShift);
 }
 
 bool BuyTrendSideOK(const int shift)
@@ -1399,6 +1489,7 @@ bool OpenMarket(const bool isBuy, const double lot, const int layerNumber, const
 
    if(StringFind(comment, "First") >= 0)
    {
+      LogFirstEntrySnapshot(isBuy, trade.ResultPrice());
       g_lastFirstEntryBarTime = iTime(g_symbol, PERIOD_CURRENT, 0);
       ResetStochasticPending();
    }
@@ -1488,7 +1579,7 @@ void ManageGrid()
 
       const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
       if(bid > 0.0 && bid <= anchorPrice - InpGridDistance)
-         OpenMarket(true, nextLot, buyCount + 1, "XAU_StochTrendGridBuy");
+         OpenMarket(true, nextLot, buyCount + 1, "XAU_StochBBTrendGridBuy");
       return;
    }
 
@@ -1504,7 +1595,7 @@ void ManageGrid()
 
       const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
       if(ask > 0.0 && ask >= anchorPrice + InpGridDistance)
-         OpenMarket(false, nextLot, sellCount + 1, "XAU_StochTrendGridSell");
+         OpenMarket(false, nextLot, sellCount + 1, "XAU_StochBBTrendGridSell");
    }
 }
 
@@ -1518,9 +1609,14 @@ bool BuySignal()
    if(!BuyTrendSideOK(0))
       return false;
    if(UseStochasticDecision())
-      return BuyDecisionOK_Stochastic();
+   {
+      if(!BuyDecisionOK_Stochastic())
+         return false;
+   }
+   if(!BollingerBuyOK(InpBBShift))
+      return false;
 
-   return false;
+   return true;
 }
 
 bool SellSignal()
@@ -1533,9 +1629,14 @@ bool SellSignal()
    if(!SellTrendSideOK(0))
       return false;
    if(UseStochasticDecision())
-      return SellDecisionOK_Stochastic();
+   {
+      if(!SellDecisionOK_Stochastic())
+         return false;
+   }
+   if(!BollingerSellOK(InpBBShift))
+      return false;
 
-   return false;
+   return true;
 }
 
 void CheckFirstEntryOnNewBar()
@@ -1561,12 +1662,12 @@ void CheckFirstEntryOnNewBar()
 
    if(BuySignal())
    {
-      OpenMarket(true, firstLot, 1, "XAU_StochTrendFirstBuy");
+      OpenMarket(true, firstLot, 1, "XAU_StochBBTrendFirstBuy");
       return;
    }
 
    if(SellSignal())
-      OpenMarket(false, firstLot, 1, "XAU_StochTrendFirstSell");
+      OpenMarket(false, firstLot, 1, "XAU_StochBBTrendFirstSell");
 }
 
 int OnInit()
@@ -1580,7 +1681,7 @@ int OnInit()
 
    if(!IsHedgingAccount())
    {
-      Print("XAU_StochTrend requires an MT5 hedging account.");
+      Print("XAU_StochBBTrend requires an MT5 hedging account.");
       return INIT_FAILED;
    }
 
@@ -1593,6 +1694,26 @@ int OnInit()
    if(InpGridDistance <= 0.0)
    {
       Print("Invalid money management or grid input.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(InpBBPeriod <= 0 || InpBBDeviation <= 0.0)
+   {
+      Print("Invalid Bollinger Band input.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(InpBBShift < 0)
+   {
+      Print("Invalid Bollinger shift input.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(InpBBPercentBuyMax < 0.0 || InpBBPercentBuyMax > 1.0 ||
+      InpBBPercentSellMin < 0.0 || InpBBPercentSellMin > 1.0 ||
+      InpBBPercentBuyMax >= InpBBPercentSellMin)
+   {
+      Print("Invalid Bollinger %B thresholds.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
@@ -1610,11 +1731,13 @@ int OnInit()
    g_slowMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpSlowMAPeriod, 0, MaMethod(), PRICE_CLOSE);
    if(UseStochasticDecision())
       g_stochHandle = iStochastic(g_symbol, PERIOD_CURRENT, InpKPeriod, InpDPeriod, InpSlowing, MODE_SMA, STO_LOWHIGH);
+   g_bbHandle = iBands(g_symbol, PERIOD_CURRENT, InpBBPeriod, 0, InpBBDeviation, PRICE_CLOSE);
 
    const bool indicatorHandlesOK =
       (g_fastMaHandle != INVALID_HANDLE &&
        g_slowMaHandle != INVALID_HANDLE &&
-       (!UseStochasticDecision() || g_stochHandle != INVALID_HANDLE));
+       (!UseStochasticDecision() || g_stochHandle != INVALID_HANDLE) &&
+       g_bbHandle != INVALID_HANDLE);
 
    if(!indicatorHandlesOK)
    {
@@ -1624,11 +1747,15 @@ int OnInit()
 
    RefreshClosedProfitCache(TelegramReportTime());
 
-   Print("XAU_StochTrend initialized | symbol=", g_symbol,
+   Print("XAU_StochBBTrend initialized | symbol=", g_symbol,
          " | MA type=", (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA"),
          " | trendMode=", (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")),
          " | trendPeriod=", DoubleToString(trendPeriod, 0),
          " | stochEntryMode=", (InpStochEntryMode == STOCH_ENTRY_ON_CROSS ? "ON_CROSS" : "AFTER_CANDLE_CLOSE"),
+         " | bbPeriod=", DoubleToString(InpBBPeriod, 0),
+         " | bbShift=", DoubleToString(InpBBShift, 0),
+         " | bbBuyMax=", DoubleToString(InpBBPercentBuyMax, 2),
+         " | bbSellMin=", DoubleToString(InpBBPercentSellMin, 2),
          " | grid=", DoubleToString(InpGridDistance, 2),
          " | lotLayers=", (string)ArraySize(g_lotTable),
          " | basketTPMode=", (InpBasketTpMode == BASKET_TP_TOTAL_LOT ? "TOTAL_LOT" : "BASE_LOT"),
@@ -1650,6 +1777,7 @@ void OnDeinit(const int reason)
    if(g_fastMaHandle != INVALID_HANDLE) IndicatorRelease(g_fastMaHandle);
    if(g_slowMaHandle != INVALID_HANDLE) IndicatorRelease(g_slowMaHandle);
    if(g_stochHandle != INVALID_HANDLE) IndicatorRelease(g_stochHandle);
+   if(g_bbHandle != INVALID_HANDLE) IndicatorRelease(g_bbHandle);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction& trans,

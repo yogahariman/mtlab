@@ -30,9 +30,9 @@ import matplotlib.pyplot as plt
 
 INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
 INPUT_FILES: list[Path] = []
-INPUT_PATTERN = "cross_ema120_*.csv"
+INPUT_PATTERN = "bbstoch_2025_*.csv"
 TIME_OFFSET_HOURS = 4
-PLOT_Y_MIN = -7000 #None
+PLOT_Y_MIN = -4000 #None
 PLOT_Y_MAX = 4000 #None
 
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
