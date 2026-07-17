@@ -1,10 +1,13 @@
-//+------------------------------------------------------------------+
-//| XAU_StochBBTrend.mq5                                             |
-//| EMA trend + Stochastic + Bollinger Band + XAU martingale grid    |
-//+------------------------------------------------------------------+
+//+-----------------------------------------------------------------------+
+//| XAU_StochBBTrend.mq5                                                  |
+//| EMA trend + Stochastic + optional BB/Envelope + XAU martingale       |
+//| Setting Telegram                                                      |
+//| Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL|
+//| https://api.telegram.org                                              |
+//+-----------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#define EA_VERSION "1.00"
+#define EA_VERSION "1.02"
 #property version   EA_VERSION
 #property strict
 
@@ -71,7 +74,7 @@ input int    InpCloseLockTimerMs          = 300;
 input int    InpMinSecondsBetweenOrders   = 1;
 
 input group "Trend Filter"
-input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_OFF;
+input ETrendFilterMode InpTrendFilterMode  = TREND_FILTER_SINGLE_EMA;
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL;
 input int    InpTrendEMAPeriod            = 120;
 input int    InpFastMAPeriod              = 13;
@@ -85,14 +88,18 @@ input int    InpDPeriod                   = 3;
 input int    InpSlowing                   = 3;
 input double InpOverbought                = 80.0;
 input double InpOversold                  = 20.0;
+input bool   InpUseBollingerDecision      = false;
 input int    InpBBPeriod                  = 20;
 input double InpBBDeviation               = 2.0;
 input int    InpBBShift                   = 0;
 input double InpBBPercentBuyMax           = 0.2;
 input double InpBBPercentSellMin          = 0.8;
+input bool   InpUseEnvelopeDecision        = false;
+input double InpEnvelopeDeviation         = 0.25;   // Percent from EMA, e.g. 0.50 = 0.5%
+input int    InpEnvelopeShift             = 0;
 
 input group "Grid Martingale"
-input string InpLotTable                  = "0.10;0.20;0.20;0.30";
+input string InpLotTable                  = "0.10;0.20;0.20;0.30;0.30"; //0.10;0.10;0.10;0.20;0.20;0.20;0.30;0.30;0.30;0.40;0.40;0.40;0.50;0.50;0.50;0.60;0.60;0.60;0.70;0.70;0.70;0.80;0.80;0.80;0.90;0.90;0.90;1.00;1.00;1.00
 input double InpGridDistance              = 8.00;  // Price distance XAU
 input EBasketTpMode InpBasketTpMode       = BASKET_TP_BASE_LOT;
 input double InpBasketTpPriceMove         = 1.00;  // Dynamic money target from initial lot
@@ -104,8 +111,8 @@ input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
 
 input group "Telegram Alerts"
 input bool   InpUseTelegramAlerts         = true;
-input string InpTelegramBotToken          = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";
-input string InpTelegramChatId            = "1448627275";
+input string InpTelegramBotToken          = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk"; //8588631523:AAF6cWB6IHNkBLJyEKmATTme9E-LSSooudw
+input string InpTelegramChatId            = "1448627275"; //8371480289
 
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = true;
@@ -119,6 +126,7 @@ datetime g_lastTradeTime = 0;
 datetime g_lastFirstEntryBarTime = 0;
 int g_fastMaHandle = INVALID_HANDLE;
 int g_slowMaHandle = INVALID_HANDLE;
+int g_envMaHandle = INVALID_HANDLE;
 int g_stochHandle = INVALID_HANDLE;
 int g_bbHandle = INVALID_HANDLE;
 bool g_pausedByMaxDd = false;
@@ -185,6 +193,38 @@ bool UseDoubleEmaTrend()
 
 bool UseStochasticDecision()
 {
+   return true;
+}
+
+bool UseBollingerDecision()
+{
+   return InpUseBollingerDecision;
+}
+
+bool UseEnvelopeDecision()
+{
+   return InpUseEnvelopeDecision;
+}
+
+bool BuyOptionalDecisionFiltersOK()
+{
+   if(UseBollingerDecision() && !BollingerBuyOK(InpBBShift))
+      return false;
+
+   if(UseEnvelopeDecision() && !EnvelopeBuyOK(InpEnvelopeShift))
+      return false;
+
+   return true;
+}
+
+bool SellOptionalDecisionFiltersOK()
+{
+   if(UseBollingerDecision() && !BollingerSellOK(InpBBShift))
+      return false;
+
+   if(UseEnvelopeDecision() && !EnvelopeSellOK(InpEnvelopeShift))
+      return false;
+
    return true;
 }
 
@@ -415,12 +455,68 @@ bool GetBollingerSnapshot(const int shift, double &upper, double &middle, double
    return true;
 }
 
+bool GetEnvelopeSnapshot(const int shift, double &middle, double &upper, double &lower)
+{
+   middle = 0.0;
+   upper = 0.0;
+   lower = 0.0;
+
+   if(g_envMaHandle == INVALID_HANDLE)
+      return false;
+
+   if(!GetBufferValue(g_envMaHandle, 0, shift, middle))
+      return false;
+   if(middle <= 0.0)
+      return false;
+
+   const double deviation = InpEnvelopeDeviation / 100.0;
+   upper = middle * (1.0 + deviation);
+   lower = middle * (1.0 - deviation);
+   return true;
+}
+
+bool EnvelopeBuyOK(const int shift)
+{
+   if(!UseEnvelopeDecision())
+      return true;
+
+   double middle = 0.0, upper = 0.0, lower = 0.0;
+   if(!GetEnvelopeSnapshot(shift, middle, upper, lower))
+      return false;
+
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+   if(closePrice <= 0.0)
+      return false;
+
+   return (closePrice > middle && closePrice <= upper);
+}
+
+bool EnvelopeSellOK(const int shift)
+{
+   if(!UseEnvelopeDecision())
+      return true;
+
+   double middle = 0.0, upper = 0.0, lower = 0.0;
+   if(!GetEnvelopeSnapshot(shift, middle, upper, lower))
+      return false;
+
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, shift);
+   if(closePrice <= 0.0)
+      return false;
+
+   return (closePrice < middle && closePrice >= lower);
+}
+
 void LogFirstEntrySnapshot(const bool isBuy, const double execPrice)
 {
    double stochMain = 0.0, stochSignal = 0.0;
    double bbUpper = 0.0, bbMiddle = 0.0, bbLower = 0.0, percentB = 0.0;
+   double envMiddle = 0.0, envUpper = 0.0, envLower = 0.0;
    const bool stochOk = GetStochasticSnapshot(InpBBShift, stochMain, stochSignal);
-   const bool bbOk = GetBollingerSnapshot(InpBBShift, bbUpper, bbMiddle, bbLower, percentB);
+   const bool bbOk = (UseBollingerDecision() &&
+                      GetBollingerSnapshot(InpBBShift, bbUpper, bbMiddle, bbLower, percentB));
+   const bool envOk = (UseEnvelopeDecision() &&
+                       GetEnvelopeSnapshot(InpEnvelopeShift, envMiddle, envUpper, envLower));
 
    Print("First entry snapshot | side=", (isBuy ? "BUY" : "SELL"),
          " | execPrice=", DoubleToString(execPrice, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)),
@@ -430,7 +526,14 @@ void LogFirstEntrySnapshot(const bool isBuy, const double execPrice)
          " | bbMiddle=", (bbOk ? DoubleToString(bbMiddle, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
          " | bbLower=", (bbOk ? DoubleToString(bbLower, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
          " | percentB=", (bbOk ? DoubleToString(percentB, 4) : "n/a"),
-         " | bbShift=", InpBBShift);
+         " | bbEnabled=", (UseBollingerDecision() ? "true" : "false"),
+         " | bbShift=", InpBBShift,
+         " | envMiddle=", (envOk ? DoubleToString(envMiddle, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | envUpper=", (envOk ? DoubleToString(envUpper, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | envLower=", (envOk ? DoubleToString(envLower, (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS)) : "n/a"),
+         " | envEnabled=", (UseEnvelopeDecision() ? "true" : "false"),
+         " | envShift=", InpEnvelopeShift,
+         " | envDeviation=", DoubleToString(InpEnvelopeDeviation, 2));
 }
 
 bool BuyTrendSideOK(const int shift)
@@ -892,7 +995,11 @@ void SendInitTelegram()
       "TradeMode: " + (InpTradeMode == TRADE_BUY_ONLY ? "BUY_ONLY" : (InpTradeMode == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH_SINGLE")) + "\n" +
       "TrendMode: " + (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")) + "\n" +
       "MA Type: " + (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA") + "\n" +
+      "Envelope: " + (InpUseEnvelopeDecision ? "ON" : "OFF") + "\n" +
+      "EnvelopeDev: " + DoubleToString(InpEnvelopeDeviation, 2) + "\n" +
+      "EnvelopeShift: " + (string)InpEnvelopeShift + "\n" +
       "Grid: " + DoubleToString(InpGridDistance, 2) + "\n" +
+      "LotTable: " + InpLotTable + "\n" +
       "LotLayers: " + (string)ArraySize(g_lotTable) + "\n" +
       "Session: " + TimeModeLabel() + "\n" +
       "PauseWindows: " + InpPauseWindows + "\n" +
@@ -1613,7 +1720,7 @@ bool BuySignal()
       if(!BuyDecisionOK_Stochastic())
          return false;
    }
-   if(!BollingerBuyOK(InpBBShift))
+   if(!BuyOptionalDecisionFiltersOK())
       return false;
 
    return true;
@@ -1633,7 +1740,7 @@ bool SellSignal()
       if(!SellDecisionOK_Stochastic())
          return false;
    }
-   if(!BollingerSellOK(InpBBShift))
+   if(!SellOptionalDecisionFiltersOK())
       return false;
 
    return true;
@@ -1697,23 +1804,39 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(InpBBPeriod <= 0 || InpBBDeviation <= 0.0)
+   const bool useBollinger = UseBollingerDecision();
+   const bool useEnvelope = UseEnvelopeDecision();
+
+   if(useBollinger && (InpBBPeriod <= 0 || InpBBDeviation <= 0.0))
    {
       Print("Invalid Bollinger Band input.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(InpBBShift < 0)
+   if(useBollinger && InpBBShift < 0)
    {
       Print("Invalid Bollinger shift input.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   if(InpBBPercentBuyMax < 0.0 || InpBBPercentBuyMax > 1.0 ||
-      InpBBPercentSellMin < 0.0 || InpBBPercentSellMin > 1.0 ||
-      InpBBPercentBuyMax >= InpBBPercentSellMin)
+   if(useBollinger &&
+      (InpBBPercentBuyMax < 0.0 || InpBBPercentBuyMax > 1.0 ||
+       InpBBPercentSellMin < 0.0 || InpBBPercentSellMin > 1.0 ||
+       InpBBPercentBuyMax >= InpBBPercentSellMin))
    {
       Print("Invalid Bollinger %B thresholds.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(useEnvelope && InpEnvelopeDeviation <= 0.0)
+   {
+      Print("Invalid Envelope deviation input.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(useEnvelope && InpEnvelopeShift < 0)
+   {
+      Print("Invalid Envelope shift input.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
@@ -1729,15 +1852,19 @@ int OnInit()
    const int trendPeriod = (UseSingleEmaTrend() ? InpTrendEMAPeriod : InpFastMAPeriod);
    g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, trendPeriod, 0, MaMethod(), PRICE_CLOSE);
    g_slowMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpSlowMAPeriod, 0, MaMethod(), PRICE_CLOSE);
+   if(useEnvelope)
+      g_envMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpTrendEMAPeriod, 0, MaMethod(), PRICE_CLOSE);
    if(UseStochasticDecision())
       g_stochHandle = iStochastic(g_symbol, PERIOD_CURRENT, InpKPeriod, InpDPeriod, InpSlowing, MODE_SMA, STO_LOWHIGH);
-   g_bbHandle = iBands(g_symbol, PERIOD_CURRENT, InpBBPeriod, 0, InpBBDeviation, PRICE_CLOSE);
+   if(useBollinger)
+      g_bbHandle = iBands(g_symbol, PERIOD_CURRENT, InpBBPeriod, 0, InpBBDeviation, PRICE_CLOSE);
 
    const bool indicatorHandlesOK =
       (g_fastMaHandle != INVALID_HANDLE &&
        g_slowMaHandle != INVALID_HANDLE &&
+       (!useEnvelope || g_envMaHandle != INVALID_HANDLE) &&
        (!UseStochasticDecision() || g_stochHandle != INVALID_HANDLE) &&
-       g_bbHandle != INVALID_HANDLE);
+       (!useBollinger || g_bbHandle != INVALID_HANDLE));
 
    if(!indicatorHandlesOK)
    {
@@ -1752,11 +1879,16 @@ int OnInit()
          " | trendMode=", (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")),
          " | trendPeriod=", DoubleToString(trendPeriod, 0),
          " | stochEntryMode=", (InpStochEntryMode == STOCH_ENTRY_ON_CROSS ? "ON_CROSS" : "AFTER_CANDLE_CLOSE"),
+         " | bbEnabled=", (useBollinger ? "true" : "false"),
          " | bbPeriod=", DoubleToString(InpBBPeriod, 0),
          " | bbShift=", DoubleToString(InpBBShift, 0),
          " | bbBuyMax=", DoubleToString(InpBBPercentBuyMax, 2),
          " | bbSellMin=", DoubleToString(InpBBPercentSellMin, 2),
+         " | envEnabled=", (useEnvelope ? "true" : "false"),
+         " | envDeviation=", DoubleToString(InpEnvelopeDeviation, 2),
+         " | envShift=", DoubleToString(InpEnvelopeShift, 0),
          " | grid=", DoubleToString(InpGridDistance, 2),
+         " | lotTable=", InpLotTable,
          " | lotLayers=", (string)ArraySize(g_lotTable),
          " | basketTPMode=", (InpBasketTpMode == BASKET_TP_TOTAL_LOT ? "TOTAL_LOT" : "BASE_LOT"),
          " | basketTPPriceMove=", DoubleToString(InpBasketTpPriceMove, 2));
@@ -1776,6 +1908,7 @@ void OnDeinit(const int reason)
 
    if(g_fastMaHandle != INVALID_HANDLE) IndicatorRelease(g_fastMaHandle);
    if(g_slowMaHandle != INVALID_HANDLE) IndicatorRelease(g_slowMaHandle);
+   if(g_envMaHandle != INVALID_HANDLE) IndicatorRelease(g_envMaHandle);
    if(g_stochHandle != INVALID_HANDLE) IndicatorRelease(g_stochHandle);
    if(g_bbHandle != INVALID_HANDLE) IndicatorRelease(g_bbHandle);
 }

@@ -331,8 +331,6 @@ def main() -> int:
         [
             "file",
             "rows",
-            "start_datetime",
-            "end_datetime",
             "total_profit",
             "max_dd",
             "max_dd_datetime",
