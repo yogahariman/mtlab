@@ -23,6 +23,12 @@ enum ETradeMode
    TRADE_BOTH_SINGLE = 2
 };
 
+enum EGridEntryMode
+{
+   GRID_ENTRY_LIVE = 0,
+   GRID_ENTRY_CANDLE_CLOSE_CONFIRM = 1
+};
+
 enum EMaxDdResumeMode
 {
    MAX_DD_CONTINUE_TRADING = 0,
@@ -36,16 +42,9 @@ enum EMaType
    MA_TYPE_EXPONENTIAL = 1
 };
 
-enum ETrendFilterMode
-{
-   TREND_FILTER_OFF = 0,
-   TREND_FILTER_SINGLE_EMA = 1,
-   TREND_FILTER_DOUBLE_EMA = 2
-};
-
 input group "General"
 input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][TF/SET]
-input ETradeMode InpTradeMode           = TRADE_BOTH_SINGLE; // Trading direction: buy-only, sell-only, or both-single
+input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only, sell-only, or both-single
 
 input group "Risk & Execution"
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
@@ -58,29 +57,41 @@ input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (
 input double InpMaxSpreadGridEntryPrice  = 0.40;    // Max spread for grid entry in price units (XAU, 0=disabled)
 
 input group "Grid Martingale"
-input string InpLotTable                = "0.01;0.01;0.01;0.01;0.01;0.02;0.02;0.02;0.02;0.02;0.03;0.03;0.03;0.04;0.04;0.05;0.05;0.06;0.06;0.07;0.07;0.08;0.08;0.09;0.09;0.1;0.1;0.11;0.11;0.12;0.12;0.13;0.13;0.14;0.14;0.15;0.15;0.16;0.16;0.17;0.17;0.18;0.18;0.19;0.19;0.2;0.2;0.21;0.21;0.22;0.22;0.23;0.23;0.24;0.24;0.25;0.25;0.26;0.26"; // Lot layers, semicolon-separated
-input double InpGridDistance            = 0.8;   // Grid distance in price units (XAU)
+input string InpLotTable                = "0.01,5;0.02,5;0.03,5;0.04,5;0.05,5;0.06,5;0.07,5;0.08,5;0.09,5;0.10,5;0.11,5;0.12,5;0.13,5;0.14,5;0.15,5;0.16,5;0.17,5;0.18,5;0.19,5;0.20,5;0.21,5;0.22,5;0.23,5;0.24,5;0.25,5;0.26,5;0.27,5;0.28,5;0.29,5;0.30,5;0.31,5;0.32,5;0.33,5;0.34,5;0.35,5"; // Lot,count; separated by semicolon
+input double InpGridDistance            = 1.6;   // Grid distance in price units (XAU)
 input double InpXauMoneyPerPriceUnit    = 100.0;  // Money per 1.00 price move per 1 lot
+input EGridEntryMode InpGridEntryMode   = GRID_ENTRY_LIVE; // Grid entry mode for 2nd+ positions: live price or candle close confirm
 
 input group "Trend Filter"
-input ETrendFilterMode InpTrendFilterMode = TREND_FILTER_SINGLE_EMA; // Trend EMA filter for first entry
+input bool   InpFirstEntryOnNewCandle   = true;  // First entry only on a new candle
+input bool   InpUseSingleEMAFilter        = false; // Use Single EMA filter
+input bool   InpUseDoubleEMAFilter        = false; // Use Double EMA filter
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL; // EMA/SMA for trend filter
 input int    InpTrendEMAPeriod            = 120;   // Single EMA period
 input int    InpFastMAPeriod              = 13;    // Fast EMA period for double EMA
 input int    InpSlowMAPeriod              = 233;   // Slow EMA period for double EMA
 input double InpEmaMinDistance            = 0.50;  // Minimum EMA distance in price units (XAU)
+input bool   InpUseWilliamsRFilter        = false; // Williams %R filter for first entry
+input int    InpWilliamsRPeriod           = 21;    // Williams %R period
+input double InpWilliamsRBuyMax           = -80.0; // BUY allowed when %R <= this value
+input double InpWilliamsRSellMin          = -20.0; // SELL allowed when %R >= this value
+input bool   InpUseRSIFilter              = false; // RSI filter for first entry
+input int    InpRSIPeriod                 = 14;    // RSI period
+input double InpRSIBuyMax                 = 30.0;  // BUY allowed when RSI <= this value
+input double InpRSISellMin                = 70.0;  // SELL allowed when RSI >= this value
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = true;   // Enable manual time filter
-input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
-input string InpPauseWindows            = "1:00-9:00;12:00-13:00;18:00-22:00"; // Trading pause windows: "hh:mm-hh:mm;hh:mm-hh:mm"
+input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_BROKER; // Session input timezone: broker/UTC/WIB(UTC+7)
+input string InpPauseWindows            = "20:00-2:00"; // Trading pause windows: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 input group "Stop Loss / Drawdown"
-input double InpMaxDrawdownMoney        = 1000.0;   // Close all when floating drawdown >= value (0=off)
+input double InpMaxDrawdownMoney        = 0;   // Close all when floating drawdown >= value (0=off)
 input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING; // Continue trading, pause manual, or resume next day
 
 input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
+input double InpMinBasketTpMoney        = 8.0;  // Minimum basket TP in account currency
 input double InpBasketTrailStartMoney   = 100.0;   // Mode switch: basket TP <= value => fixed TP, basket TP > value => start trailing after profit reaches basket TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 
@@ -117,6 +128,8 @@ int    g_maxDdPausedDayKey = 0;
 int    g_lastKnownPosCount = 0;
 int    g_fastMaHandle = INVALID_HANDLE;
 int    g_slowMaHandle = INVALID_HANDLE;
+int    g_williamsRHandle = INVALID_HANDLE;
+int    g_rsiHandle = INVALID_HANDLE;
 ENUM_POSITION_TYPE g_activeBasketType = POSITION_TYPE_BUY;
 bool   g_activeBasketTypeKnown = false;
 ETradeMode g_effectiveTradeMode = TRADE_BUY_ONLY;
@@ -163,17 +176,17 @@ ENUM_MA_METHOD MaMethod()
 
 bool UseTrendFilter()
 {
-   return (InpTrendFilterMode != TREND_FILTER_OFF);
+   return (InpUseSingleEMAFilter || InpUseDoubleEMAFilter);
 }
 
 bool UseSingleEmaTrend()
 {
-   return (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA);
+   return InpUseSingleEMAFilter;
 }
 
 bool UseDoubleEmaTrend()
 {
-   return (InpTrendFilterMode == TREND_FILTER_DOUBLE_EMA);
+   return InpUseDoubleEMAFilter;
 }
 
 string TradeModeLabel()
@@ -182,14 +195,25 @@ string TradeModeLabel()
       return "BUY_ONLY";
    if(g_effectiveTradeMode == TRADE_SELL_ONLY)
       return "SELL_ONLY";
-  return "BOTH_SINGLE";
+   return "BOTH_SINGLE";
+}
+
+string TradeModeInputLabel()
+{
+   if(g_effectiveTradeMode == TRADE_BUY_ONLY)
+      return "BUY_ONLY";
+   if(g_effectiveTradeMode == TRADE_SELL_ONLY)
+      return "SELL_ONLY";
+   return "BOTH_SINGLE";
 }
 
 string TrendFilterModeLabel()
 {
-   if(InpTrendFilterMode == TREND_FILTER_SINGLE_EMA)
+   if(InpUseSingleEMAFilter && InpUseDoubleEMAFilter)
+      return "SINGLE_EMA+DOUBLE_EMA";
+   if(InpUseSingleEMAFilter)
       return "SINGLE_EMA";
-   if(InpTrendFilterMode == TREND_FILTER_DOUBLE_EMA)
+   if(InpUseDoubleEMAFilter)
       return "DOUBLE_EMA";
    return "OFF";
 }
@@ -197,6 +221,13 @@ string TrendFilterModeLabel()
 string MovingAverageTypeLabel()
 {
    return (InpMovingAverageType == MA_TYPE_SIMPLE ? "SMA" : "EMA");
+}
+
+string GridEntryModeLabel()
+{
+   if(InpGridEntryMode == GRID_ENTRY_CANDLE_CLOSE_CONFIRM)
+      return "CANDLE_CLOSE_CONFIRM";
+   return "LIVE";
 }
 
 ENUM_POSITION_TYPE DefaultBasketType()
@@ -536,21 +567,60 @@ bool SellTrendSideOK(const int shift)
    return true;
 }
 
+bool WilliamsRFirstEntryOK(const ENUM_POSITION_TYPE type)
+{
+   if(!InpUseWilliamsRFilter)
+      return true;
+
+   double value = 0.0;
+   if(!GetBufferValue(g_williamsRHandle, 0, 1, value))
+      return false;
+
+   if(type == POSITION_TYPE_BUY)
+      return (value <= InpWilliamsRBuyMax);
+   return (value >= InpWilliamsRSellMin);
+}
+
+bool RSIFirstEntryOK(const ENUM_POSITION_TYPE type)
+{
+   if(!InpUseRSIFilter)
+      return true;
+
+   double value = 0.0;
+   if(!GetBufferValue(g_rsiHandle, 0, 1, value))
+      return false;
+
+   if(type == POSITION_TYPE_BUY)
+      return (value <= InpRSIBuyMax);
+   return (value >= InpRSISellMin);
+}
+
+bool FirstEntrySideOK(const ENUM_POSITION_TYPE type)
+{
+   if(UseTrendFilter())
+   {
+      if(type == POSITION_TYPE_BUY && !BuyTrendSideOK(1))
+         return false;
+      if(type == POSITION_TYPE_SELL && !SellTrendSideOK(1))
+         return false;
+   }
+   if(!WilliamsRFirstEntryOK(type) || !RSIFirstEntryOK(type))
+      return false;
+   return true;
+}
+
 bool SelectFirstEntryType(ENUM_POSITION_TYPE &entryType)
 {
    entryType = DefaultBasketType();
 
-   if(InpTradeMode == TRADE_BUY_ONLY)
-      return (!UseTrendFilter() || BuyTrendSideOK(0));
+   if(g_effectiveTradeMode == TRADE_BUY_ONLY)
+      return FirstEntrySideOK(POSITION_TYPE_BUY);
 
-   if(InpTradeMode == TRADE_SELL_ONLY)
-      return (!UseTrendFilter() || SellTrendSideOK(0));
+   if(g_effectiveTradeMode == TRADE_SELL_ONLY)
+      return FirstEntrySideOK(POSITION_TYPE_SELL);
 
-   if(!UseTrendFilter())
-      return false;
-
-   const bool buyOk = BuyTrendSideOK(0);
-   const bool sellOk = SellTrendSideOK(0);
+   const bool buyOk = FirstEntrySideOK(POSITION_TYPE_BUY);
+   const bool sellOk = FirstEntrySideOK(POSITION_TYPE_SELL);
 
    if(buyOk && !sellOk)
    {
@@ -630,6 +700,57 @@ bool IsGridEntrySignalNow(const double latestPrice,
    const double ask = SymbolInfoDouble(g_symbol, SYMBOL_ASK);
    const double bid = SymbolInfoDouble(g_symbol, SYMBOL_BID);
    return IsGridDistanceReached(latestPrice, gridPrice, bid, ask, false);
+}
+
+bool IsNewBar()
+{
+   static datetime lastBarTime = 0;
+   const datetime barTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   if(barTime <= 0)
+      return false;
+
+   if(lastBarTime == 0)
+   {
+      lastBarTime = barTime;
+      return false;
+   }
+
+   if(barTime != lastBarTime)
+   {
+      lastBarTime = barTime;
+      return true;
+   }
+
+   return false;
+}
+
+bool IsNewFirstEntryCandle()
+{
+   static datetime lastBarTime = 0;
+   const datetime barTime = iTime(g_symbol, PERIOD_CURRENT, 0);
+   if(barTime <= 0)
+      return false;
+   if(lastBarTime == 0)
+   {
+      lastBarTime = barTime;
+      return false;
+   }
+   if(barTime != lastBarTime)
+   {
+      lastBarTime = barTime;
+      return true;
+   }
+   return false;
+}
+
+bool IsGridEntrySignalOnClose(const double latestPrice,
+                              const double gridPrice)
+{
+   const double closePrice = iClose(g_symbol, PERIOD_CURRENT, 1);
+   if(closePrice <= 0.0)
+      return false;
+
+   return IsGridDistanceReached(latestPrice, gridPrice, closePrice, closePrice, false);
 }
 
 ulong CloseDeviationPointsFromPriceDistance(const string symbol, const double deviationPrice)
@@ -1026,17 +1147,40 @@ bool ParseLotTable()
          continue;
       }
 
-      const double lot = StringToDouble(cell);
+      string pair[];
+      const int pairCount = StringSplit(cell, ',', pair);
+      double lot = 0.0;
+      int repeatCount = 1;
+
+      if(pairCount == 2)
+      {
+         lot = StringToDouble(pair[0]);
+         repeatCount = (int)StringToInteger(pair[1]);
+         if(repeatCount <= 0)
+         {
+            skippedCells++;
+            continue;
+         }
+      }
+      else
+      {
+         skippedCells++;
+         continue;
+      }
+
       if(lot <= 0.0)
       {
          skippedCells++;
          continue;
       }
 
-      const int newSize = g_levelCount + 1;
-      ArrayResize(g_levels, newSize);
-      g_levels[g_levelCount].lot = NormalizeVolume(lot, g_symbol);
-      g_levelCount = newSize;
+      for(int repeat = 0; repeat < repeatCount; repeat++)
+      {
+         const int newSize = g_levelCount + 1;
+         ArrayResize(g_levels, newSize);
+         g_levels[g_levelCount].lot = NormalizeVolume(lot, g_symbol);
+         g_levelCount = newSize;
+      }
    }
 
    if(skippedCells > 0 && !IsTesterRun())
@@ -1072,7 +1216,8 @@ double BasketTpMoneyTarget(const string symbol, const long magic, const ENUM_POS
    if(totalVolume <= 0.0)
       return 0.0;
 
-   return totalVolume * InpXauMoneyPerPriceUnit;
+   const double calculatedTp = totalVolume * InpXauMoneyPerPriceUnit;
+   return MathMax(calculatedTp, InpMinBasketTpMoney);
 }
 
 bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &lot, double &gridPoints)
@@ -1080,12 +1225,12 @@ bool GetLevelByPositionCount(const int positionCount, int &levelIndex, double &l
    if(g_levelCount <= 0)
       return false;
 
-   int idx = positionCount;
-   if(idx >= g_levelCount)
-      idx = g_levelCount - 1;
+   int tableIndex = positionCount;
+   if(tableIndex >= g_levelCount)
+      tableIndex = g_levelCount - 1;
 
-   levelIndex = idx;
-   lot = g_levels[idx].lot;
+   levelIndex = positionCount;
+   lot = g_levels[tableIndex].lot;
    gridPoints = InpGridDistance;
    return true;
 }
@@ -1100,19 +1245,39 @@ bool CreateTrendHandles()
 
    const ENUM_APPLIED_PRICE appliedPrice = PRICE_CLOSE;
    if(UseSingleEmaTrend())
-   {
       g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpTrendEMAPeriod, 0, MaMethod(), appliedPrice);
-      return (g_fastMaHandle != INVALID_HANDLE);
-   }
 
    if(UseDoubleEmaTrend())
    {
-      g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpFastMAPeriod, 0, MaMethod(), appliedPrice);
+      if(g_fastMaHandle == INVALID_HANDLE)
+         g_fastMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpFastMAPeriod, 0, MaMethod(), appliedPrice);
       g_slowMaHandle = iMA(g_symbol, PERIOD_CURRENT, InpSlowMAPeriod, 0, MaMethod(), appliedPrice);
-      return (g_fastMaHandle != INVALID_HANDLE && g_slowMaHandle != INVALID_HANDLE);
    }
 
-   return true;
+   return ((!UseSingleEmaTrend() || g_fastMaHandle != INVALID_HANDLE) &&
+           (!UseDoubleEmaTrend() || (g_fastMaHandle != INVALID_HANDLE && g_slowMaHandle != INVALID_HANDLE)));
+}
+
+bool CreateWilliamsRHandle()
+{
+   if(!InpUseWilliamsRFilter)
+      return true;
+   if(InpWilliamsRPeriod <= 0 || InpWilliamsRBuyMax < -100.0 || InpWilliamsRBuyMax > 0.0 ||
+      InpWilliamsRSellMin < -100.0 || InpWilliamsRSellMin > 0.0)
+      return false;
+   g_williamsRHandle = iWPR(g_symbol, PERIOD_CURRENT, InpWilliamsRPeriod);
+   return (g_williamsRHandle != INVALID_HANDLE);
+}
+
+bool CreateRSIHandle()
+{
+   if(!InpUseRSIFilter)
+      return true;
+   if(InpRSIPeriod <= 0 || InpRSIBuyMax < 0.0 || InpRSIBuyMax > 100.0 ||
+      InpRSISellMin < 0.0 || InpRSISellMin > 100.0)
+      return false;
+   g_rsiHandle = iRSI(g_symbol, PERIOD_CURRENT, InpRSIPeriod, PRICE_CLOSE);
+   return (g_rsiHandle != INVALID_HANDLE);
 }
 
 void ReleaseTrendHandles()
@@ -1127,6 +1292,18 @@ void ReleaseTrendHandles()
    {
       IndicatorRelease(g_slowMaHandle);
       g_slowMaHandle = INVALID_HANDLE;
+   }
+
+   if(g_williamsRHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_williamsRHandle);
+      g_williamsRHandle = INVALID_HANDLE;
+   }
+
+   if(g_rsiHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_rsiHandle);
+      g_rsiHandle = INVALID_HANDLE;
    }
 }
 
@@ -1161,7 +1338,8 @@ int OnInit()
 
    Print("Lot table config | table=", InpLotTable,
          " | grid_distance=", DoubleToString(InpGridDistance, 2),
-         " | money_per_1price_1lot=", DoubleToString(InpXauMoneyPerPriceUnit, 2));
+         " | money_per_1price_1lot=", DoubleToString(InpXauMoneyPerPriceUnit, 2),
+         " | grid_entry_mode=", GridEntryModeLabel());
 
    if(InpGridDistance <= 0.0)
    {
@@ -1181,9 +1359,10 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   g_maxPositions = g_levelCount;
+   g_maxPositions = 0;
 
-   if(!UseTrendFilter() && InpTradeMode == TRADE_BOTH_SINGLE)
+   if(!UseTrendFilter() && !InpUseWilliamsRFilter && !InpUseRSIFilter &&
+      InpTradeMode == TRADE_BOTH_SINGLE)
    {
       g_effectiveTradeMode = TRADE_BUY_ONLY;
       if(!IsTesterRun())
@@ -1204,21 +1383,27 @@ int OnInit()
 
    if(UseTrendFilter())
    {
-      if(InpTrendFilterMode == TREND_FILTER_SINGLE_EMA && InpTrendEMAPeriod <= 0)
+      if((InpUseSingleEMAFilter && InpTrendEMAPeriod <= 0) ||
+         (InpUseDoubleEMAFilter && (InpFastMAPeriod <= 0 || InpSlowMAPeriod <= 0)))
       {
-         Print("Init fail | invalid Trend EMA period | need > 0");
+         Print("Init fail | invalid EMA period | need > 0");
          ReleaseTrendHandles();
          return INIT_FAILED;
       }
+   }
 
-      if(InpTrendFilterMode == TREND_FILTER_DOUBLE_EMA &&
-         (InpFastMAPeriod <= 0 || InpSlowMAPeriod <= 0))
-      {
-         Print("Init fail | invalid fast/slow EMA period | need > 0");
-         ReleaseTrendHandles();
-         return INIT_FAILED;
-      }
+   if(!CreateWilliamsRHandle())
+   {
+      Print("Init fail | Williams %R setup failed | period=", InpWilliamsRPeriod);
+      ReleaseTrendHandles();
+      return INIT_FAILED;
+   }
 
+   if(!CreateRSIHandle())
+   {
+      Print("Init fail | RSI setup failed | period=", InpRSIPeriod);
+      ReleaseTrendHandles();
+      return INIT_FAILED;
    }
 
    if(InpUseBasketTrail)
@@ -1266,7 +1451,7 @@ int OnInit()
    {
       Print("EA init OK | Symbol=", g_symbol,
             " | Levels=", g_levelCount,
-            " | InputTradeMode=", (InpTradeMode == TRADE_BUY_ONLY ? "BUY_ONLY" : (InpTradeMode == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH_SINGLE")),
+            " | InputTradeMode=", TradeModeInputLabel(),
             " | EffectiveTradeMode=", TradeModeLabel(),
             " | DefaultSide=", ActiveSideLabel(),
             " | LotTable=", InpLotTable,
@@ -1300,7 +1485,7 @@ int OnInit()
             " | BasketTrail=", (InpUseBasketTrail ? "true" : "false"),
             " | BasketTrailStart=", DoubleToString(InpBasketTrailStartMoney, 2),
             " | TrailDistance%=", DoubleToString(InpTrailDistancePercent, 2),
-            " | MaxPositions=", g_maxPositions,
+            " | MaxPositions=", (g_maxPositions > 0 ? (string)g_maxPositions : "UNLIMITED"),
             " | XauMoneyPerPriceUnit=", DoubleToString(InpXauMoneyPerPriceUnit, 2));
 
       for(int i = 0; i < g_levelCount; i++)
@@ -1363,7 +1548,9 @@ void OnTick()
 
    // Detect transition from active basket to flat.
    if(posCount <= 0 && g_lastKnownPosCount > 0)
+   {
       g_maxPosWarnSent = false;
+   }
    g_lastKnownPosCount = posCount;
 
    if(posCount <= 0)
@@ -1556,6 +1743,9 @@ void OnTick()
 
    if(posCount == 0)
    {
+      if(InpFirstEntryOnNewCandle && !IsNewFirstEntryCandle())
+         return;
+
       if(!IsFirstEntryAllowedNow())
          return;
 
@@ -1570,6 +1760,10 @@ void OnTick()
 
       ENUM_POSITION_TYPE firstType = DefaultBasketType();
       if(!SelectFirstEntryType(firstType))
+         return;
+      if(!WilliamsRFirstEntryOK(firstType))
+         return;
+      if(!RSIFirstEntryOK(firstType))
          return;
       if(!IsTesterRun())
          Print("Open first entry | level=", (levelIndex + 1),
@@ -1593,7 +1787,17 @@ void OnTick()
    const double latest_price = snapshot.latestPrice;
 
    const double gridPrice = gridPoints;
-   const bool shouldOpenGrid = IsGridEntrySignalNow(latest_price, gridPrice);
+   bool shouldOpenGrid = false;
+   if(InpGridEntryMode == GRID_ENTRY_CANDLE_CLOSE_CONFIRM)
+   {
+      if(IsNewBar())
+         shouldOpenGrid = IsGridEntrySignalOnClose(latest_price, gridPrice);
+   }
+   else
+   {
+      shouldOpenGrid = IsGridEntrySignalNow(latest_price, gridPrice);
+   }
+
    if(shouldOpenGrid)
    {
       if(!SpreadOK(g_symbol, InpMaxSpreadGridEntryPrice))
@@ -1604,7 +1808,7 @@ void OnTick()
                " | side=", ActiveSideLabel(),
                " | lot=", DoubleToString(lot, 2),
                " | gridDistance=", DoubleToString(gridPoints, 2),
-               " | trigger=live_price");
+               " | trigger=", (InpGridEntryMode == GRID_ENTRY_CANDLE_CLOSE_CONFIRM ? "candle_close" : "live_price"));
       if(!OpenMarket(basketType, lot, (basketType == POSITION_TYPE_SELL ? "TableGridSell" : "TableGridBuy")))
          return;
    }

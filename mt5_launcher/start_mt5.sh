@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#chmod +x start_mt5_all.sh
+#chmod +x start_mt5.sh
 set -euo pipefail
 
 WINEPREFIX_PATH="/home/admin/.wine/dosdevices/d:/.wine"

@@ -7,7 +7,7 @@
 //+-----------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#define EA_VERSION "1.02"
+#define EA_VERSION "1.03"
 #property version   EA_VERSION
 #property strict
 
@@ -107,7 +107,7 @@ input double InpXauMoneyPerPriceUnit      = 100.0; // XM=1.00; Referensi profit 
 
 input group "Stop Loss / Drawdown"
 input double InpMaxDrawdownMoney          = 960.00; // XM=9.60; Batas max drawdown basket dalam uang akun. Untuk XM biasanya nilai efektif ~ /100.
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING;
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY;
 
 input group "Telegram Alerts"
 input bool   InpUseTelegramAlerts         = true;
@@ -117,7 +117,7 @@ input string InpTelegramChatId            = "1448627275"; //8371480289
 input group "Manual Time Filter"
 input bool   InpUseTimeFilter             = true;
 input ETimeMode InpTimeMode               = TIME_MODE_WIB;
-input string InpPauseWindows              = "18:00-9:00;12:00-13:00"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
+input string InpPauseWindows              = "17:00-9:00;11:30-13:15"; // Time windows to pause trading, format: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 CTrade trade;
 string g_symbol = "";
@@ -985,6 +985,7 @@ void SendInitTelegram()
    RefreshClosedProfitCache(nowTime);
    const string broker = AccountInfoString(ACCOUNT_COMPANY);
    const string account = AccountInfoString(ACCOUNT_NAME);
+   const double totalProfit = AllClosedProfit(nowTime);
 
    const string msg =
       "EA Started\n" +
@@ -994,7 +995,13 @@ void SendInitTelegram()
       "Symbol: " + g_symbol + "\n" +
       "TradeMode: " + (InpTradeMode == TRADE_BUY_ONLY ? "BUY_ONLY" : (InpTradeMode == TRADE_SELL_ONLY ? "SELL_ONLY" : "BOTH_SINGLE")) + "\n" +
       "TrendMode: " + (InpTrendFilterMode == TREND_FILTER_OFF ? "OFF" : (InpTrendFilterMode == TREND_FILTER_SINGLE_EMA ? "SINGLE_EMA" : "DOUBLE_EMA")) + "\n" +
-      "MA Type: " + (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "EMA" : "SMA") + "\n" +
+      "MA Type: " + (InpMovingAverageType == MA_TYPE_EXPONENTIAL ? "Exponential" : "Simple") + "\n" +
+      "BB: " + (InpUseBollingerDecision ? "ON" : "OFF") + "\n" +
+      "BBPeriod: " + (string)InpBBPeriod + "\n" +
+      "BBDeviation: " + DoubleToString(InpBBDeviation, 2) + "\n" +
+      "BBShift: " + (string)InpBBShift + "\n" +
+      "BBPercentBuyMax: " + DoubleToString(InpBBPercentBuyMax, 2) + "\n" +
+      "BBPercentSellMin: " + DoubleToString(InpBBPercentSellMin, 2) + "\n" +
       "Envelope: " + (InpUseEnvelopeDecision ? "ON" : "OFF") + "\n" +
       "EnvelopeDev: " + DoubleToString(InpEnvelopeDeviation, 2) + "\n" +
       "EnvelopeShift: " + (string)InpEnvelopeShift + "\n" +
@@ -1004,7 +1011,8 @@ void SendInitTelegram()
       "Session: " + TimeModeLabel() + "\n" +
       "PauseWindows: " + InpPauseWindows + "\n" +
       "MaxDD: " + DoubleToString(InpMaxDrawdownMoney, 2) + "\n" +
-      "WeeklyClosedProfit: " + DoubleToString(WeeklyClosedProfit(nowTime), 2);
+      "WeeklyClosedProfit: " + DoubleToString(WeeklyClosedProfit(nowTime), 2) + "\n" +
+      "TotalProfit: " + DoubleToString(totalProfit, 2);
 
    SendTelegramMessage(msg);
 }
