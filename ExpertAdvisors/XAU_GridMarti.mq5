@@ -43,8 +43,9 @@ enum EMaType
 };
 
 input group "General"
-input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][TF/SET]
-input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only, sell-only, or both-single
+input long   InpBuyMagic                = 790101; // Magic number for BUY basket
+input long   InpSellMagic               = 790102; // Magic number for SELL basket
+input ETradeMode InpTradeMode           = TRADE_BOTH_SINGLE; // Trading direction: buy-only, sell-only, or both-single
 
 input group "Risk & Execution"
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
@@ -57,17 +58,17 @@ input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (
 input double InpMaxSpreadGridEntryPrice  = 0.40;    // Max spread for grid entry in price units (XAU, 0=disabled)
 
 input group "Grid Martingale"
-input string InpLotTable                = "0.01,5;0.02,5;0.03,5;0.04,5;0.05,5;0.06,5;0.07,5;0.08,5;0.09,5;0.10,5;0.11,5;0.12,5;0.13,5;0.14,5;0.15,5;0.16,5;0.17,5;0.18,5;0.19,5;0.20,5;0.21,5;0.22,5;0.23,5;0.24,5;0.25,5;0.26,5;0.27,5;0.28,5;0.29,5;0.30,5;0.31,5;0.32,5;0.33,5;0.34,5;0.35,5"; // Lot,count; separated by semicolon
-input double InpGridDistance            = 1.6;   // Grid distance in price units (XAU)
+input string InpLotTable                = "0.01,2;0.02,2;0.03,2;0.04,2;0.05,2;0.06,2;0.07,2;0.08,2;0.09,2;0.10,2;0.11,2;0.12,2;0.13,2;0.14,2;0.15,2;0.16,2;0.17,2;0.18,2;0.19,2;0.20,2;0.21,2;0.22,2;0.23,2;0.24,2;0.25,2;0.26,2;0.27,2;0.28,2;0.29,2;0.30,2;0.31,2;0.32,2;0.33,2;0.34,2;0.35,2"; // Lot,count; separated by semicolon
+input double InpGridDistance            = 2.0;   // Grid distance in price units (XAU)
 input double InpXauMoneyPerPriceUnit    = 100.0;  // Money per 1.00 price move per 1 lot
-input EGridEntryMode InpGridEntryMode   = GRID_ENTRY_LIVE; // Grid entry mode for 2nd+ positions: live price or candle close confirm
+input EGridEntryMode InpGridEntryMode   = GRID_ENTRY_CANDLE_CLOSE_CONFIRM; // Grid entry mode for 2nd+ positions: live price or candle close confirm
 
 input group "Trend Filter"
-input bool   InpFirstEntryOnNewCandle   = true;  // First entry only on a new candle
+input bool   InpFirstEntryOnNewCandle   = false;  // First entry only on a new candle
 input bool   InpUseSingleEMAFilter        = false; // Use Single EMA filter
 input bool   InpUseDoubleEMAFilter        = false; // Use Double EMA filter
 input EMaType InpMovingAverageType        = MA_TYPE_EXPONENTIAL; // EMA/SMA for trend filter
-input int    InpTrendEMAPeriod            = 120;   // Single EMA period
+input int    InpTrendEMAPeriod            = 240;   // Single EMA period
 input int    InpFastMAPeriod              = 13;    // Fast EMA period for double EMA
 input int    InpSlowMAPeriod              = 233;   // Slow EMA period for double EMA
 input double InpEmaMinDistance            = 0.50;  // Minimum EMA distance in price units (XAU)
@@ -79,21 +80,31 @@ input bool   InpUseRSIFilter              = false; // RSI filter for first entry
 input int    InpRSIPeriod                 = 14;    // RSI period
 input double InpRSIBuyMax                 = 30.0;  // BUY allowed when RSI <= this value
 input double InpRSISellMin                = 70.0;  // SELL allowed when RSI >= this value
+input bool   InpUseStochFilter             = true; // Stochastic %K filter for first entry
+input int    InpStochKPeriod               = 5;    // Stochastic %K period
+input int    InpStochDPeriod               = 3;     // Stochastic %D period
+input int    InpStochSlowing               = 3;     // Stochastic slowing
+input double InpStochBuyMax                = 20.0;  // BUY allowed when %K <= this value
+input double InpStochSellMin               = 80.0;  // SELL allowed when %K >= this value
 
 input group "Trading Session"
 input bool   InpUseTimeFilter           = true;   // Enable manual time filter
-input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_BROKER; // Session input timezone: broker/UTC/WIB(UTC+7)
-input string InpPauseWindows            = "20:00-2:00"; // Trading pause windows: "hh:mm-hh:mm;hh:mm-hh:mm"
+input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
+input string InpActiveWindows           = "5:30-6:59;9:00-17:59;20:00-22:59"; // Active trading windows: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 input group "Stop Loss / Drawdown"
-input double InpMaxDrawdownMoney        = 0;   // Close all when floating drawdown >= value (0=off)
-input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_CONTINUE_TRADING; // Continue trading, pause manual, or resume next day
+input double InpMaxDrawdownMoney        = 5000;   // Close all when floating drawdown >= value (0=off)
+input EMaxDdResumeMode InpMaxDdResumeMode = MAX_DD_PAUSE_NEXT_DAY; // Continue trading, pause manual, or resume next day
 
 input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input double InpMinBasketTpMoney        = 8.0;  // Minimum basket TP in account currency
+input double InpMinBasketTpMoney        = 2.0;  // Minimum basket TP in account currency
 input double InpBasketTrailStartMoney   = 100.0;   // Mode switch: basket TP <= value => fixed TP, basket TP > value => start trailing after profit reaches basket TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
+
+input group "Telegram Alerts"
+input string InpTelegramBotToken        = "8383407093:AAFGHJ6oBVHtvRsJel2NQUOklbeOwtxtdVk";     // Telegram bot token
+input string InpTelegramChatId          = "1448627275";     // Telegram chat ID
 
 struct SLevel
 {
@@ -130,6 +141,7 @@ int    g_fastMaHandle = INVALID_HANDLE;
 int    g_slowMaHandle = INVALID_HANDLE;
 int    g_williamsRHandle = INVALID_HANDLE;
 int    g_rsiHandle = INVALID_HANDLE;
+int    g_stochHandle = INVALID_HANDLE;
 ENUM_POSITION_TYPE g_activeBasketType = POSITION_TYPE_BUY;
 bool   g_activeBasketTypeKnown = false;
 ETradeMode g_effectiveTradeMode = TRADE_BUY_ONLY;
@@ -167,6 +179,18 @@ bool IsSellMode()
 bool IsBothSingleMode()
 {
    return (g_effectiveTradeMode == TRADE_BOTH_SINGLE);
+}
+
+long MagicForType(const ENUM_POSITION_TYPE type)
+{
+   return (type == POSITION_TYPE_SELL ? InpSellMagic : InpBuyMagic);
+}
+
+bool DetectAnyBasketType(ENUM_POSITION_TYPE &type)
+{
+   if(DetectBasketType(g_symbol, InpBuyMagic, type))
+      return true;
+   return DetectBasketType(g_symbol, InpSellMagic, type);
 }
 
 ENUM_MA_METHOD MaMethod()
@@ -281,7 +305,7 @@ ENUM_POSITION_TYPE ActivePositionType()
       return g_activeBasketType;
 
    ENUM_POSITION_TYPE type = DefaultBasketType();
-   if(DetectBasketType(g_symbol, InpMagic, type))
+   if(DetectAnyBasketType(type))
       return type;
 
    return type;
@@ -422,12 +446,12 @@ bool IsInPauseWindowText(const int nowMinutes, const string windowText)
    return (nowMinutes >= startMinutes || nowMinutes <= endMinutes);
 }
 
-bool IsInTimePauseWindow()
+bool IsInTimeActiveWindow()
 {
    if(!InpUseTimeFilter)
-      return false;
+      return true;
 
-   string windows = InpPauseWindows;
+   string windows = InpActiveWindows;
    StringTrimLeft(windows);
    StringTrimRight(windows);
    if(StringLen(windows) <= 0)
@@ -477,9 +501,7 @@ int MaxDdResumeReferenceDateKey(const datetime whenTime)
 
 bool IsFirstEntryAllowedNow()
 {
-   if(!InpUseTimeFilter)
-      return true;
-   return !IsInTimePauseWindow();
+   return IsInTimeActiveWindow();
 }
 
 bool GetBufferValue(const int handle, const int bufferIndex, const int shift, double &value)
@@ -595,6 +617,20 @@ bool RSIFirstEntryOK(const ENUM_POSITION_TYPE type)
    return (value >= InpRSISellMin);
 }
 
+bool StochFirstEntryOK(const ENUM_POSITION_TYPE type)
+{
+   if(!InpUseStochFilter)
+      return true;
+
+   double value = 0.0;
+   if(!GetBufferValue(g_stochHandle, 0, 1, value))
+      return false;
+
+   if(type == POSITION_TYPE_BUY)
+      return (value <= InpStochBuyMax);
+   return (value >= InpStochSellMin);
+}
+
 bool FirstEntrySideOK(const ENUM_POSITION_TYPE type)
 {
    if(UseTrendFilter())
@@ -604,7 +640,7 @@ bool FirstEntrySideOK(const ENUM_POSITION_TYPE type)
       if(type == POSITION_TYPE_SELL && !SellTrendSideOK(1))
          return false;
    }
-   if(!WilliamsRFirstEntryOK(type) || !RSIFirstEntryOK(type))
+   if(!WilliamsRFirstEntryOK(type) || !RSIFirstEntryOK(type) || !StochFirstEntryOK(type))
       return false;
    return true;
 }
@@ -653,6 +689,7 @@ bool OpenMarket(const ENUM_POSITION_TYPE type,
                 const double lot,
                 const string comment)
 {
+   trade.SetExpertMagicNumber(MagicForType(type));
    bool ok = false;
    if(type == POSITION_TYPE_SELL)
       ok = trade.Sell(lot, g_symbol, 0.0, 0.0, 0.0, comment);
@@ -1018,6 +1055,77 @@ void SendPauseWarning(const int posCount, const string reason)
    Print(msg);
 }
 
+string TelegramUrlEncode(const string text)
+{
+   string out = "";
+   const int len = StringLen(text);
+   for(int i = 0; i < len; i++)
+   {
+      const ushort c = StringGetCharacter(text, i);
+      if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+         out += CharToString((uchar)c);
+      else if(c == ' ')
+         out += "%20";
+      else if(c <= 255)
+         out += StringFormat("%%%02X", (int)c);
+      else
+         out += "%3F";
+   }
+   return out;
+}
+
+bool SendTelegramMessage(const string text)
+{
+   if(IsTesterRun())
+      return false;
+   string token = InpTelegramBotToken;
+   string chat = InpTelegramChatId;
+   StringTrimLeft(token); StringTrimRight(token);
+   StringTrimLeft(chat); StringTrimRight(chat);
+   if(StringLen(token) == 0 || StringLen(chat) == 0)
+      return false;
+
+   const string url = "https://api.telegram.org/bot" + token + "/sendMessage";
+   const string body = "chat_id=" + TelegramUrlEncode(chat) + "&text=" + TelegramUrlEncode(text);
+   const string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+   char data[], result[];
+   string resultHeaders = "";
+   int copied = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   ArrayResize(data, (copied > 0 ? copied - 1 : 0));
+   ResetLastError();
+   const int code = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
+   if(code < 200 || code >= 300)
+   {
+      Print("Telegram fail | code=", code, " | err=", GetLastError());
+      return false;
+   }
+   Print("Telegram OK | EA active message sent");
+   return true;
+}
+
+void SendEaActiveTelegram()
+{
+   const string msg =
+      "XAU_GridMarti ACTIVE\n" +
+      "Account: " + AccountInfoString(ACCOUNT_NAME) + "\n" +
+      "Login: " + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "\n" +
+      "Broker: " + AccountInfoString(ACCOUNT_COMPANY) + "\n" +
+      "Symbol: " + g_symbol + "\n" +
+      "Timeframe: " + EnumToString((ENUM_TIMEFRAMES)_Period) + "\n" +
+      "TradeMode: " + TradeModeLabel() + "\n" +
+      "ActiveWindows: " + InpActiveWindows + " (" + SessionTimeModeLabel() + ")\n" +
+      "GridDistance: " + DoubleToString(InpGridDistance, 2) + "\n" +
+      "GridEntryMode: " + GridEntryModeLabel() + "\n" +
+      "MaxDrawdown: " + DoubleToString(InpMaxDrawdownMoney, 2) + "\n" +
+      "MaxDDResume: " + MaxDdResumeModeLabel() + "\n" +
+      "BasketTrail: " + (InpUseBasketTrail ? "ON" : "OFF") + "\n" +
+      "TrendFilter: " + TrendFilterModeLabel() + "\n" +
+      "Stochastic: " + (InpUseStochFilter ? "ON" : "OFF") + "\n" +
+      "OpenPositions: " + (string)g_lastKnownPosCount;
+   SendTelegramMessage(msg);
+}
+
 void ResetTrailState()
 {
    g_trailActive = false;
@@ -1103,7 +1211,7 @@ bool ProcessCloseLock(const ENUM_POSITION_TYPE type, const int posCount)
    }
 
    g_closeLockWaitTradePrinted = false;
-   const int remain = CloseAllPositionsWithRetries(g_symbol, InpMagic, type, InpCloseAttemptsPerRun);
+   const int remain = CloseAllPositionsWithRetries(g_symbol, MagicForType(type), type, InpCloseAttemptsPerRun);
    if(remain == 0)
    {
       ResetTrailState();
@@ -1280,6 +1388,21 @@ bool CreateRSIHandle()
    return (g_rsiHandle != INVALID_HANDLE);
 }
 
+bool CreateStochHandle()
+{
+   if(!InpUseStochFilter)
+      return true;
+   if(InpStochKPeriod <= 0 || InpStochDPeriod <= 0 || InpStochSlowing <= 0 ||
+      InpStochBuyMax < 0.0 || InpStochBuyMax > 100.0 ||
+      InpStochSellMin < 0.0 || InpStochSellMin > 100.0 ||
+      InpStochBuyMax > InpStochSellMin)
+      return false;
+   g_stochHandle = iStochastic(g_symbol, PERIOD_CURRENT, InpStochKPeriod,
+                               InpStochDPeriod, InpStochSlowing,
+                               MODE_SMA, STO_LOWHIGH);
+   return (g_stochHandle != INVALID_HANDLE);
+}
+
 void ReleaseTrendHandles()
 {
    if(g_fastMaHandle != INVALID_HANDLE)
@@ -1305,6 +1428,12 @@ void ReleaseTrendHandles()
       IndicatorRelease(g_rsiHandle);
       g_rsiHandle = INVALID_HANDLE;
    }
+
+   if(g_stochHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_stochHandle);
+      g_stochHandle = INVALID_HANDLE;
+   }
 }
 
 int OnInit()
@@ -1327,12 +1456,19 @@ int OnInit()
    if(!IsHedgingAccount())
    {
       if(!IsTesterRun())
-         Print("Warn | account type is not HEDGING | fallback=limited_netting_behavior");
+      Print("Warn | account type is not HEDGING | fallback=limited_netting_behavior");
    }
 
-   if(InpUseTimeFilter && StringLen(InpPauseWindows) <= 0)
+   if(InpBuyMagic <= 0 || InpSellMagic <= 0 || InpBuyMagic == InpSellMagic)
    {
-      Print("Init fail | invalid pause windows | value cannot be empty");
+      Print("Init fail | BUY and SELL magic numbers must be positive and different | buy=",
+            InpBuyMagic, " | sell=", InpSellMagic);
+      return INIT_FAILED;
+   }
+
+   if(InpUseTimeFilter && StringLen(InpActiveWindows) <= 0)
+   {
+      Print("Init fail | invalid active windows | value cannot be empty");
       return INIT_FAILED;
    }
 
@@ -1361,7 +1497,7 @@ int OnInit()
 
    g_maxPositions = 0;
 
-   if(!UseTrendFilter() && !InpUseWilliamsRFilter && !InpUseRSIFilter &&
+   if(!UseTrendFilter() && !InpUseWilliamsRFilter && !InpUseRSIFilter && !InpUseStochFilter &&
       InpTradeMode == TRADE_BOTH_SINGLE)
    {
       g_effectiveTradeMode = TRADE_BUY_ONLY;
@@ -1406,6 +1542,14 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   if(!CreateStochHandle())
+   {
+      Print("Init fail | Stochastic setup failed | K=", InpStochKPeriod,
+            " | D=", InpStochDPeriod, " | slowing=", InpStochSlowing);
+      ReleaseTrendHandles();
+      return INIT_FAILED;
+   }
+
    if(InpUseBasketTrail)
    {
       if(InpBasketTrailStartMoney <= 0.0)
@@ -1420,14 +1564,15 @@ int OnInit()
       }
    }
 
-   trade.SetExpertMagicNumber(InpMagic);
+   trade.SetExpertMagicNumber(InpBuyMagic);
    g_ready = true;
    ResetTrailState();
    DeactivateCloseLock();
    g_maxPosWarnSent = false;
    g_pausedByMaxDd = false;
    g_maxDdPausedDayKey = 0;
-   g_lastKnownPosCount = CountManagedPositions(g_symbol, InpMagic);
+   g_lastKnownPosCount = CountManagedPositions(g_symbol, InpBuyMagic) +
+                         CountManagedPositions(g_symbol, InpSellMagic);
 
    const bool needTimer = InpUseCloseLock;
    int timerMs = InpCloseLockTimerMs;
@@ -1478,7 +1623,7 @@ int OnInit()
       Print("Init session/exit | UseTimeFilter=", (InpUseTimeFilter ? "true" : "false"),
             " | SessionMode=", SessionTimeModeLabel(),
             " | BrokerUTCOffset=", (string)BrokerUtcOffsetHoursNow(),
-            " | PauseWindows=", InpPauseWindows,
+            " | ActiveWindows=", InpActiveWindows,
             " | MaxDrawdown=", DoubleToString(InpMaxDrawdownMoney, 2),
             " | MaxDdResumeMode=", MaxDdResumeModeLabel(),
             " | MaxDdResumeRef=", MaxDdResumeReferenceModeLabel(),
@@ -1495,6 +1640,8 @@ int OnInit()
       }
    }
 
+   SendEaActiveTelegram();
+
    return INIT_SUCCEEDED;
 }
 
@@ -1510,8 +1657,9 @@ void OnTimer()
       return;
 
    ENUM_POSITION_TYPE basketType = DefaultBasketType();
-   const bool hasBasket = DetectBasketType(g_symbol, InpMagic, basketType);
-   const int posCount = CountManagedPositions(g_symbol, InpMagic);
+   const bool hasBasket = DetectAnyBasketType(basketType);
+   const int posCount = CountManagedPositions(g_symbol, InpBuyMagic) +
+                        CountManagedPositions(g_symbol, InpSellMagic);
    if(hasBasket)
    {
       g_activeBasketType = basketType;
@@ -1530,7 +1678,8 @@ void OnTick()
       return;
 
    ENUM_POSITION_TYPE basketType = DefaultBasketType();
-   const bool hasBasket = DetectBasketType(g_symbol, InpMagic, basketType);
+   const bool hasBasket = DetectAnyBasketType(basketType);
+   const long basketMagic = MagicForType(basketType);
    if(hasBasket)
    {
       g_activeBasketType = basketType;
@@ -1542,9 +1691,13 @@ void OnTick()
    }
 
    SPositionSnapshot snapshot;
-   BuildPositionSnapshot(g_symbol, InpMagic, basketType, snapshot);
+   BuildPositionSnapshot(g_symbol, basketMagic, basketType, snapshot);
    const int posCount = snapshot.count;
    const double floatingProfitNow = snapshot.totalProfit;
+   // Keep the first-entry candle state synchronized even while a basket is active.
+   // Otherwise, closing a basket after a candle change can make the next tick
+   // look like a new candle although it is already mid-candle.
+   const bool isNewFirstEntryCandle = IsNewFirstEntryCandle();
 
    // Detect transition from active basket to flat.
    if(posCount <= 0 && g_lastKnownPosCount > 0)
@@ -1582,7 +1735,7 @@ void OnTick()
                if(!IsTradeAllowed())
                   return;
 
-               const int remain = CloseAllPositionsWithRetries(g_symbol, InpMagic, basketType, InpCloseAttemptsPerRun);
+               const int remain = CloseAllPositionsWithRetries(g_symbol, basketMagic, basketType, InpCloseAttemptsPerRun);
                if(remain == 0)
                   ResetTrailState();
             }
@@ -1597,7 +1750,7 @@ void OnTick()
    if(posCount > 0)
    {
       const double profit = floatingProfitNow;
-      const double basketTpMoneyTarget = BasketTpMoneyTarget(g_symbol, InpMagic, basketType);
+      const double basketTpMoneyTarget = BasketTpMoneyTarget(g_symbol, basketMagic, basketType);
       if(InpMaxDrawdownMoney > 0.0 && profit <= -InpMaxDrawdownMoney)
       {
          g_pausedByMaxDd = (InpMaxDdResumeMode != MAX_DD_CONTINUE_TRADING);
@@ -1613,7 +1766,7 @@ void OnTick()
             if(!IsTradeAllowed())
                return;
 
-            const int remain = CloseAllPositionsWithRetries(g_symbol, InpMagic, basketType, InpCloseAttemptsPerRun);
+            const int remain = CloseAllPositionsWithRetries(g_symbol, basketMagic, basketType, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
          }
@@ -1668,7 +1821,7 @@ void OnTick()
             if(!IsTradeAllowed())
                return;
 
-            const int remain = CloseAllPositionsWithRetries(g_symbol, InpMagic, basketType, InpCloseAttemptsPerRun);
+            const int remain = CloseAllPositionsWithRetries(g_symbol, basketMagic, basketType, InpCloseAttemptsPerRun);
             if(remain == 0)
                ResetTrailState();
          }
@@ -1714,7 +1867,7 @@ void OnTick()
                      if(!IsTradeAllowed())
                         return;
 
-                     const int remain = CloseAllPositionsWithRetries(g_symbol, InpMagic, basketType, InpCloseAttemptsPerRun);
+                     const int remain = CloseAllPositionsWithRetries(g_symbol, basketMagic, basketType, InpCloseAttemptsPerRun);
                      if(remain == 0)
                         ResetTrailState();
                   }
@@ -1743,7 +1896,7 @@ void OnTick()
 
    if(posCount == 0)
    {
-      if(InpFirstEntryOnNewCandle && !IsNewFirstEntryCandle())
+      if(InpFirstEntryOnNewCandle && !isNewFirstEntryCandle)
          return;
 
       if(!IsFirstEntryAllowedNow())
@@ -1764,6 +1917,8 @@ void OnTick()
       if(!WilliamsRFirstEntryOK(firstType))
          return;
       if(!RSIFirstEntryOK(firstType))
+         return;
+      if(!StochFirstEntryOK(firstType))
          return;
       if(!IsTesterRun())
          Print("Open first entry | level=", (levelIndex + 1),

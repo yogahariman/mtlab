@@ -30,10 +30,10 @@ import matplotlib.pyplot as plt
 
 INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
 INPUT_FILES: list[Path] = []
-INPUT_PATTERN = "bbstoch_2025_*.csv"
+INPUT_PATTERN = "*.csv"
 TIME_OFFSET_HOURS = 4
-PLOT_Y_MIN = -4000 #None
-PLOT_Y_MAX = 4000 #None
+PLOT_Y_MIN = -2000 #None
+PLOT_Y_MAX = 2000 #None
 
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
 DATETIME_FORMATS = [
@@ -42,7 +42,7 @@ DATETIME_FORMATS = [
     "%Y.%m.%d %H:%M",
     "%Y-%m-%d %H:%M",
 ]
-FILENAME_RE = re.compile(r"(\d{2})$")
+FILENAME_RE = re.compile(r"(\d{2}[:-]\d{2})$")
 
 
 @dataclass
@@ -58,7 +58,7 @@ class ParsedRow:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analisis performa backtest MT5 untuk file CSV dengan jam di nama file."
+        description="Analisis performa backtest MT5 untuk file CSV dengan waktu HH:MM atau HH-MM di nama file."
     )
     parser.add_argument("--folder", type=Path, default=INPUT_FOLDER)
     parser.add_argument(
@@ -182,18 +182,22 @@ def get_input_paths(files: list[Path], folder: Path, pattern: str) -> tuple[list
     return existing, missing
 
 
-def parse_file_meta(path: Path) -> int:
+def parse_file_meta(path: Path) -> tuple[int, int]:
     match = FILENAME_RE.search(path.stem)
     if not match:
-        raise ValueError(f"Nama file harus diakhiri jam 2 digit, contoh 01.csv atau ema_01.csv: {path.name}")
-    hour = int(match.group(1))
-    if not 0 <= hour <= 23:
-        raise ValueError(f"Jam di luar range 00-23: {path.name}")
-    return hour
+        raise ValueError(
+            f"Nama file harus diakhiri waktu HH:MM atau HH-MM, "
+            f"contoh 01:30.csv atau ema_02-45.csv: {path.name}"
+        )
+    hour, minute = (int(part) for part in re.split(r"[:-]", match.group(1)))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Waktu HH:MM/HH-MM tidak valid (harus 00:00-23:59): {path.name}")
+    return hour, minute
 
 
-def broker_hour_to_wib(hour: int) -> int:
-    return (hour + TIME_OFFSET_HOURS) % 24
+def broker_time_to_wib(hour: int, minute: int) -> tuple[int, int]:
+    total_minutes = (hour * 60 + minute + TIME_OFFSET_HOURS * 60) % (24 * 60)
+    return total_minutes // 60, total_minutes % 60
 
 
 def load_file(path: Path, weekdays_only: bool) -> list[ParsedRow]:
@@ -217,9 +221,9 @@ def load_file(path: Path, weekdays_only: bool) -> list[ParsedRow]:
 
 
 def analyze_file(path: Path, weekdays_only: bool) -> dict:
-    hour = parse_file_meta(path)
+    hour, minute = parse_file_meta(path)
     rows = load_file(path, weekdays_only)
-    hour_wib = broker_hour_to_wib(hour)
+    hour_wib, minute_wib = broker_time_to_wib(hour, minute)
 
     start_balance = float(rows[0].balance)
     end_balance = float(rows[-1].balance)
@@ -230,7 +234,9 @@ def analyze_file(path: Path, weekdays_only: bool) -> dict:
         "file": path.name,
         "path": str(path),
         "hour_broker": hour,
+        "minute_broker": minute,
         "hour_wib": hour_wib,
+        "minute_wib": minute_wib,
         "rows": int(len(rows)),
         "start_datetime": rows[0].datetime,
         "end_datetime": rows[-1].datetime,
@@ -305,6 +311,26 @@ def build_hour_summary(records: list[dict]) -> list[dict]:
     return summary
 
 
+def build_time_summary(records: list[dict]) -> list[dict]:
+    grouped: dict[int, list[dict]] = {}
+    for row in records:
+        time_minute = int(row["hour_wib"]) * 60 + int(row["minute_wib"])
+        grouped.setdefault(time_minute, []).append(row)
+
+    summary: list[dict] = []
+    for time_minute, items in sorted(grouped.items()):
+        profits = [float(item["total_profit"]) for item in items]
+        summary.append(
+            {
+                "time_minute": time_minute,
+                "time_label": f"{time_minute // 60:02d}:{time_minute % 60:02d}",
+                "file_count": len(items),
+                "total_profit": sum(profits),
+            }
+        )
+    return summary
+
+
 def format_value(value) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
@@ -336,7 +362,10 @@ def create_hour_figure(
     y_min: float | None = None,
     y_max: float | None = None,
 ) -> plt.Figure:
-    plot_rows = sorted(hour_summary, key=lambda row: int(row["hour"]))
+    if hour_summary and "time_minute" in hour_summary[0]:
+        plot_rows = sorted(hour_summary, key=lambda row: int(row["time_minute"]))
+    else:
+        plot_rows = sorted(hour_summary, key=lambda row: int(row["hour"]))
     fig, ax = plt.subplots(figsize=(15, 8.5), dpi=120)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
@@ -347,9 +376,9 @@ def create_hour_figure(
         fig.tight_layout()
         return fig
 
-    hours = [int(row["hour"]) for row in plot_rows]
+    is_exact_time = "time_minute" in plot_rows[0]
+    x_values = [int(row["time_minute"]) if is_exact_time else int(row["hour"]) for row in plot_rows]
     profits = [float(row["total_profit"]) for row in plot_rows]
-    file_counts = [int(row["file_count"]) for row in plot_rows]
     colors = ["#2ca02c" if p >= 0 else "#d62728" for p in profits]
 
     max_profit = max(profits)
@@ -365,17 +394,28 @@ def create_hour_figure(
         if y_top <= y_bottom:
             raise ValueError("y-max harus lebih besar dari y-min")
 
-    bars = ax.bar(hours, profits, color=colors, width=0.72, edgecolor="none")
+    bar_width = 8 if is_exact_time else 0.72
+    bars = ax.bar(x_values, profits, color=colors, width=bar_width, edgecolor="none")
     ax.axhline(0, color="black", linewidth=1.0)
     ax.grid(axis="y", alpha=0.2)
     ax.set_axisbelow(True)
-    ax.set_xlim(-0.6, 23.6)
-    ax.set_ylim(y_bottom, y_top)
-    ax.set_xticks(range(24))
-    ax.set_xticklabels([f"{h:02d}" for h in range(24)])
-    ax.set_xlabel("WIB Hour")
+    if is_exact_time:
+        ax.set_xlim(-15, 24 * 60 - 1 + 15)
+        ax.set_xticks(range(0, 24 * 60, 60))
+        ax.set_xticklabels([f"{h:02d}:00" for h in range(24)])
+        ax.set_xlabel("WIB Time")
+        ax.set_title("Backtest Profit by WIB Time", pad=18)
+        ax.grid(axis="x", alpha=0.12, linewidth=0.8)
+    else:
+        ax.set_xlim(-0.6, 23.6)
+        ax.set_xticks(range(24))
+        ax.set_xticklabels([f"{h:02d}" for h in range(24)])
+        ax.set_xlabel("WIB Hour")
+        ax.set_title("Hourly Backtest Profit by WIB Hour", pad=18)
+    ax.tick_params(axis="x", labelrotation=45)
+    for label in ax.get_xticklabels():
+        label.set_horizontalalignment("right")
     ax.set_ylabel("Profit")
-    ax.set_title("Hourly Backtest Profit by WIB Hour", pad=18)
     ax.text(
         0.01,
         1.02,
@@ -387,25 +427,12 @@ def create_hour_figure(
 
     y_range = max(abs(y_top), abs(y_bottom), 1.0)
     label_offset = y_range * 0.03
-    count_y = y_bottom + (y_top - y_bottom) * 0.02
-
-    for bar, profit, count in zip(bars, profits, file_counts):
+    for bar, profit in zip(bars, profits):
         x = bar.get_x() + bar.get_width() / 2
         if profit >= 0:
             ax.text(x, profit + label_offset, f"{profit:,.0f}", ha="center", va="bottom", fontsize=8)
         else:
             ax.text(x, profit - label_offset, f"{profit:,.0f}", ha="center", va="top", fontsize=8)
-        ax.text(x, count_y, str(count), ha="center", va="bottom", fontsize=8)
-
-    ax.text(
-        0.99,
-        0.02,
-        "file_count below each hour",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=8,
-    )
 
     fig.tight_layout()
     return fig
@@ -469,6 +496,7 @@ def main() -> int:
         return 1
 
     hour_summary = build_hour_summary(summaries)
+    time_summary = build_time_summary(summaries)
 
     print("\n=== Ringkasan Per Jam ===")
     print(f"(semua jam sudah dikonversi ke WIB, broker +{TIME_OFFSET_HOURS})")
@@ -504,7 +532,7 @@ def main() -> int:
     )
 
     try:
-        show_hour_plot(hour_summary, args.save_png, PLOT_Y_MIN, PLOT_Y_MAX)
+        show_hour_plot(time_summary, args.save_png, PLOT_Y_MIN, PLOT_Y_MAX)
     except Exception as exc:
         print(f"\nPlot tidak bisa ditampilkan: {exc}")
 
