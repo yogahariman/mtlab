@@ -4,7 +4,7 @@
 //+----------------------------------------------------------------------+
 #property copyright "Copyright 2026, Hariman"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.06"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -45,7 +45,7 @@ enum EMaType
 input group "General"
 input long   InpBuyMagic                = 790101; // Magic number for BUY basket
 input long   InpSellMagic               = 790102; // Magic number for SELL basket
-input ETradeMode InpTradeMode           = TRADE_BOTH_SINGLE; // Trading direction: buy-only, sell-only, or both-single
+input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only, sell-only, or both-single
 
 input group "Risk & Execution"
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
@@ -58,8 +58,8 @@ input int    InpCloseLockTimerMs        = 300;    // Close-lock timer interval (
 input double InpMaxSpreadGridEntryPrice  = 0.40;    // Max spread for grid entry in price units (XAU, 0=disabled)
 
 input group "Grid Martingale"
-input string InpLotTable                = "0.01,2;0.02,2;0.03,2;0.04,2;0.05,2;0.06,2;0.07,2;0.08,2;0.09,2;0.10,2;0.11,2;0.12,2;0.13,2;0.14,2;0.15,2;0.16,2;0.17,2;0.18,2;0.19,2;0.20,2;0.21,2;0.22,2;0.23,2;0.24,2;0.25,2;0.26,2;0.27,2;0.28,2;0.29,2;0.30,2;0.31,2;0.32,2;0.33,2;0.34,2;0.35,2"; // Lot,count; separated by semicolon
-input double InpGridDistance            = 2.0;   // Grid distance in price units (XAU)
+input string InpLotTable                = "0.01,5;0.02,4;0.03,4;0.04,3;0.05,2;0.06,2;0.07,2;0.08,2;0.09,2;0.10,2;0.11,2;0.12,2;0.13,2;0.14,2;0.15,2;0.16,2;0.17,2;0.18,2;0.19,2;0.20,2;0.21,2;0.22,2;0.23,2;0.24,2;0.25,2;0.26,2;0.27,2;0.28,2;0.29,2;0.30,2;0.31,2;0.32,2;0.33,2;0.34,2;0.35,2"; // Lot,count; separated by semicolon
+input double InpGridDistance            = 1;   // Grid distance in price units (XAU)
 input double InpXauMoneyPerPriceUnit    = 100.0;  // Money per 1.00 price move per 1 lot
 input EGridEntryMode InpGridEntryMode   = GRID_ENTRY_CANDLE_CLOSE_CONFIRM; // Grid entry mode for 2nd+ positions: live price or candle close confirm
 
@@ -87,10 +87,10 @@ input int    InpStochSlowing               = 3;     // Stochastic slowing
 input double InpStochBuyMax                = 20.0;  // BUY allowed when %K <= this value
 input double InpStochSellMin               = 80.0;  // SELL allowed when %K >= this value
 
-input group "Trading Session"
+input group "Trading Session | buy-only: 5:30-17:59 | sell-only: 10:00-17:59"
 input bool   InpUseTimeFilter           = true;   // Enable manual time filter
 input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
-input string InpActiveWindows           = "5:30-6:59;9:00-17:59;20:00-22:59"; // Active trading windows: "hh:mm-hh:mm;hh:mm-hh:mm"
+input string InpActiveWindows           = "5:30-17:59"; // Active trading windows: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 input group "Stop Loss / Drawdown"
 input double InpMaxDrawdownMoney        = 5000;   // Close all when floating drawdown >= value (0=off)

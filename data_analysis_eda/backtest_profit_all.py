@@ -17,9 +17,9 @@ from typing import Iterable
 # 2) Kosongkan INPUT_FILES dan pakai INPUT_FOLDER + INPUT_PATTERN.
 #
 # Contoh WSL/Linux:
-INPUT_FOLDER = Path(r"/home/rfi212/Documents/mt5")
+INPUT_FOLDER = Path(r"/home/rfi212/Documents/mt5/80")
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_PATTERN = "gd*.csv"
+INPUT_PATTERN = "*.csv"
 INPUT_FILES: list[Path] = []
 
 WEEKDAYS_ONLY = True

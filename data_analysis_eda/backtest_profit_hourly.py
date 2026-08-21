@@ -12,6 +12,9 @@ from pathlib import Path
 from statistics import mean
 from typing import Iterable, Optional
 
+import numpy as np
+import pandas as pd
+
 
 # def _bootstrap_site_packages() -> None:
 #     candidates = []
@@ -28,12 +31,11 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-config")
 import matplotlib.pyplot as plt
 
 
-INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
+INPUT_FOLDER = Path("/home/rfi212/Documents/mt5/Grid_2026_Apr_100")
 INPUT_FILES: list[Path] = []
-INPUT_PATTERN = "*.csv"
+INPUT_PATTERN = "sell_*.csv"
 TIME_OFFSET_HOURS = 4
-PLOT_Y_MIN = -2000 #None
-PLOT_Y_MAX = 2000 #None
+MAX_DD = 4000.0
 
 INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQUITY"}
 DATETIME_FORMATS = [
@@ -331,6 +333,64 @@ def build_time_summary(records: list[dict]) -> list[dict]:
     return summary
 
 
+def build_day_summary(dd_events: list[dict], max_dd_threshold: float) -> list[dict]:
+    day_names = {
+        0: "Senin",
+        1: "Selasa",
+        2: "Rabu",
+        3: "Kamis",
+        4: "Jumat",
+        5: "Sabtu",
+        6: "Minggu",
+    }
+
+    grouped: dict[int, list[dict]] = {day: [] for day in range(7)}
+    for event in dd_events:
+        if float(event["dd"]) < max_dd_threshold:
+            continue
+
+        event_dt = event.get("datetime")
+        if isinstance(event_dt, datetime):
+            grouped[event_dt.weekday()].append(event)
+
+    summary: list[dict] = []
+    for day_idx in range(7):
+        items = grouped[day_idx]
+        summary.append(
+            {
+                "day_idx": day_idx,
+                "day_name": day_names[day_idx],
+                "dd_count": len(items),
+            }
+        )
+
+    summary.sort(key=lambda item: (int(item["dd_count"]), int(item["day_idx"])))
+    return summary
+
+
+def build_dd_heatmap(events: list[dict], max_dd_threshold: float) -> pd.DataFrame:
+    heat = np.zeros((7, 24), dtype=int)
+
+    for event in events:
+        if float(event["dd"]) < max_dd_threshold:
+            continue
+
+        event_dt = event.get("datetime")
+        if not isinstance(event_dt, datetime):
+            continue
+
+        day_idx = event_dt.weekday()
+        hour_idx = int(event["hour_wib"])
+        if 0 <= day_idx <= 6 and 0 <= hour_idx <= 23:
+            heat[day_idx, hour_idx] += 1
+
+    return pd.DataFrame(
+        heat,
+        index=["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"],
+        columns=[f"{hour:02d}" for hour in range(24)],
+    )
+
+
 def format_value(value) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
@@ -359,21 +419,36 @@ def print_table(rows: list[dict], columns: list[str]) -> None:
 
 def create_hour_figure(
     hour_summary: list[dict],
-    y_min: float | None = None,
-    y_max: float | None = None,
+    heatmap_df: pd.DataFrame | None = None,
+    heatmap_threshold: float | None = None,
 ) -> plt.Figure:
     if hour_summary and "time_minute" in hour_summary[0]:
         plot_rows = sorted(hour_summary, key=lambda row: int(row["time_minute"]))
     else:
         plot_rows = sorted(hour_summary, key=lambda row: int(row["hour"]))
-    fig, ax = plt.subplots(figsize=(15, 8.5), dpi=120)
+
+    has_heatmap = heatmap_df is not None
+    if has_heatmap:
+        fig, (ax_profit, ax_heat) = plt.subplots(
+            2,
+            1,
+            figsize=(15, 13),
+            dpi=120,
+            gridspec_kw={"height_ratios": [1.1, 0.95], "hspace": 0.32},
+            constrained_layout=True,
+        )
+    else:
+        fig, ax_profit = plt.subplots(figsize=(15, 8.5), dpi=120, constrained_layout=True)
+        ax_heat = None
+
     fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+    ax_profit.set_facecolor("white")
 
     if not plot_rows:
-        ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
-        ax.set_axis_off()
-        fig.tight_layout()
+        ax_profit.text(0.5, 0.5, "No data", transform=ax_profit.transAxes, ha="center", va="center")
+        ax_profit.set_axis_off()
+        if ax_heat is not None:
+            ax_heat.set_axis_off()
         return fig
 
     is_exact_time = "time_minute" in plot_rows[0]
@@ -384,43 +459,36 @@ def create_hour_figure(
     max_profit = max(profits)
     min_profit = min(profits)
     top_pad = 0.1 * max(abs(max_profit), abs(min_profit), 1.0)
-
-    if y_min is None and y_max is None:
-        y_top = max_profit + top_pad
-        y_bottom = min_profit - top_pad
-    else:
-        y_bottom = min_profit - top_pad if y_min is None else y_min
-        y_top = max_profit + top_pad if y_max is None else y_max
-        if y_top <= y_bottom:
-            raise ValueError("y-max harus lebih besar dari y-min")
+    y_top = max_profit + top_pad
+    y_bottom = min_profit - top_pad
 
     bar_width = 8 if is_exact_time else 0.72
-    bars = ax.bar(x_values, profits, color=colors, width=bar_width, edgecolor="none")
-    ax.axhline(0, color="black", linewidth=1.0)
-    ax.grid(axis="y", alpha=0.2)
-    ax.set_axisbelow(True)
+    bars = ax_profit.bar(x_values, profits, color=colors, width=bar_width, edgecolor="none")
+    ax_profit.axhline(0, color="black", linewidth=1.0)
+    ax_profit.grid(axis="y", alpha=0.2)
+    ax_profit.set_axisbelow(True)
     if is_exact_time:
-        ax.set_xlim(-15, 24 * 60 - 1 + 15)
-        ax.set_xticks(range(0, 24 * 60, 60))
-        ax.set_xticklabels([f"{h:02d}:00" for h in range(24)])
-        ax.set_xlabel("WIB Time")
-        ax.set_title("Backtest Profit by WIB Time", pad=18)
-        ax.grid(axis="x", alpha=0.12, linewidth=0.8)
+        ax_profit.set_xlim(-15, 24 * 60 - 1 + 15)
+        ax_profit.set_xticks(range(0, 24 * 60, 60))
+        ax_profit.set_xticklabels([f"{h:02d}:00" for h in range(24)])
+        ax_profit.set_xlabel("WIB Time")
+        ax_profit.set_title("Backtest Profit by WIB Time", pad=18)
+        ax_profit.grid(axis="x", alpha=0.12, linewidth=0.8)
     else:
-        ax.set_xlim(-0.6, 23.6)
-        ax.set_xticks(range(24))
-        ax.set_xticklabels([f"{h:02d}" for h in range(24)])
-        ax.set_xlabel("WIB Hour")
-        ax.set_title("Hourly Backtest Profit by WIB Hour", pad=18)
-    ax.tick_params(axis="x", labelrotation=45)
-    for label in ax.get_xticklabels():
+        ax_profit.set_xlim(-0.6, 23.6)
+        ax_profit.set_xticks(range(24))
+        ax_profit.set_xticklabels([f"{h:02d}" for h in range(24)])
+        ax_profit.set_xlabel("WIB Hour")
+        ax_profit.set_title("Hourly Backtest Profit by WIB Hour", pad=18)
+    ax_profit.tick_params(axis="x", labelrotation=45)
+    for label in ax_profit.get_xticklabels():
         label.set_horizontalalignment("right")
-    ax.set_ylabel("Profit")
-    ax.text(
+    ax_profit.set_ylabel("Profit")
+    ax_profit.text(
         0.01,
         1.02,
         f"Broker hour converted to WIB (+{TIME_OFFSET_HOURS})",
-        transform=ax.transAxes,
+        transform=ax_profit.transAxes,
         fontsize=10,
         va="bottom",
     )
@@ -430,11 +498,39 @@ def create_hour_figure(
     for bar, profit in zip(bars, profits):
         x = bar.get_x() + bar.get_width() / 2
         if profit >= 0:
-            ax.text(x, profit + label_offset, f"{profit:,.0f}", ha="center", va="bottom", fontsize=8)
+            ax_profit.text(x, profit + label_offset, f"{profit:,.0f}", ha="center", va="bottom", fontsize=8)
         else:
-            ax.text(x, profit - label_offset, f"{profit:,.0f}", ha="center", va="top", fontsize=8)
+            ax_profit.text(x, profit - label_offset, f"{profit:,.0f}", ha="center", va="top", fontsize=8)
 
-    fig.tight_layout()
+    if ax_heat is not None and heatmap_df is not None:
+        heat = heatmap_df.to_numpy(dtype=float)
+        if heat.size == 0 or float(heat.max()) == 0.0:
+            ax_heat.text(0.5, 0.5, "No DD events >= threshold", transform=ax_heat.transAxes, ha="center", va="center")
+            ax_heat.set_axis_off()
+        else:
+            im = ax_heat.imshow(heat, aspect="auto", cmap="RdYlGn_r")
+            ax_heat.set_yticks(range(heatmap_df.shape[0]))
+            ax_heat.set_yticklabels(list(heatmap_df.index))
+            ax_heat.set_xticks(range(heatmap_df.shape[1]))
+            ax_heat.set_xticklabels(list(heatmap_df.columns))
+            ax_heat.set_xlabel("Hour from filename")
+            ax_heat.set_ylabel("Day")
+            title_suffix = f" (max DD >= {heatmap_threshold:,.0f})" if heatmap_threshold is not None else ""
+            ax_heat.set_title(f"DD Heatmap by Day x Hour{title_suffix}", pad=18)
+            ax_heat.tick_params(axis="x", labelrotation=45)
+            ax_heat.set_xticks(np.arange(-0.5, heatmap_df.shape[1], 1), minor=True)
+            ax_heat.set_yticks(np.arange(-0.5, heatmap_df.shape[0], 1), minor=True)
+            ax_heat.grid(which="minor", color="white", linestyle="-", linewidth=0.8)
+            ax_heat.tick_params(which="minor", bottom=False, left=False)
+
+            for day_idx in range(heatmap_df.shape[0]):
+                for hour_idx in range(heatmap_df.shape[1]):
+                    val = heatmap_df.iat[day_idx, hour_idx]
+                    if int(val) > 0:
+                        ax_heat.text(hour_idx, day_idx, f"{int(val)}", ha="center", va="center", fontsize=7, color="black")
+
+            cbar = fig.colorbar(im, ax=ax_heat, orientation="horizontal", pad=0.12, fraction=0.06)
+            cbar.set_label("Jumlah event DD")
     return fig
 
 
@@ -445,11 +541,15 @@ def save_plot_png(fig: plt.Figure, path: Path) -> None:
 
 def show_hour_plot(
     hour_summary: list[dict],
+    heatmap_df: pd.DataFrame | None = None,
+    heatmap_threshold: float | None = None,
     save_png: Path | None = None,
-    y_min: float | None = None,
-    y_max: float | None = None,
 ) -> None:
-    fig = create_hour_figure(hour_summary, y_min=y_min, y_max=y_max)
+    fig = create_hour_figure(
+        hour_summary,
+        heatmap_df=heatmap_df,
+        heatmap_threshold=heatmap_threshold,
+    )
     if save_png is not None:
         save_plot_png(fig, save_png)
         print(f"Plot disimpan: {save_png}")
@@ -477,12 +577,26 @@ def main() -> int:
     print(f"Weekdays only  : {weekdays_only}")
 
     summaries: list[dict] = []
+    dd_events: list[dict] = []
     failed: list[tuple[Path, Exception]] = []
 
     for path in files:
         try:
             summary = analyze_file(path, weekdays_only)
             summaries.append(summary)
+            rows = load_file(path, weekdays_only)
+            hour, minute = parse_file_meta(path)
+            hour_wib, minute_wib = broker_time_to_wib(hour, minute)
+            for row in rows:
+                dd_events.append(
+                    {
+                        "datetime": row.datetime,
+                        "dd": row.dd,
+                        "hour_wib": hour_wib,
+                        "minute_wib": minute_wib,
+                        "file": path.name,
+                    }
+                )
             print(
                 f"[OK] {path.name}: profit={summary['total_profit']:,.2f}, "
                 f"max_dd={summary['max_dd']:,.2f}"
@@ -497,6 +611,8 @@ def main() -> int:
 
     hour_summary = build_hour_summary(summaries)
     time_summary = build_time_summary(summaries)
+    day_summary = build_day_summary(dd_events, MAX_DD)
+    dd_heatmap = build_dd_heatmap(dd_events, MAX_DD)
 
     print("\n=== Ringkasan Per Jam ===")
     print(f"(semua jam sudah dikonversi ke WIB, broker +{TIME_OFFSET_HOURS})")
@@ -504,15 +620,7 @@ def main() -> int:
         hour_summary,
         [
             "hour",
-            "file_count",
-            "positive_files",
-            "negative_files",
-            "win_rate_pct",
             "total_profit",
-            "avg_profit",
-            "best_profit",
-            "worst_profit",
-            "worst_max_dd",
         ],
     )
 
@@ -531,8 +639,33 @@ def main() -> int:
         f"({worst_hour['total_profit']:,.2f}, {int(worst_hour['file_count'])} file)"
     )
 
+    print("\n=== Top Hari (paling sedikit DD) ===")
+    print_table(
+        day_summary,
+        [
+            "day_name",
+            "dd_count",
+        ],
+    )
+
+    best_day = min(day_summary, key=lambda row: int(row["dd_count"]))
+    worst_day = max(day_summary, key=lambda row: int(row["dd_count"]))
+    print(
+        f"Hari paling aman      : {best_day['day_name']} "
+        f"({int(best_day['dd_count'])} event DD)"
+    )
+    print(
+        f"Hari paling rawan     : {worst_day['day_name']} "
+        f"({int(worst_day['dd_count'])} event DD)"
+    )
+
     try:
-        show_hour_plot(time_summary, args.save_png, PLOT_Y_MIN, PLOT_Y_MAX)
+        show_hour_plot(
+            time_summary,
+            heatmap_df=dd_heatmap,
+            heatmap_threshold=MAX_DD,
+            save_png=args.save_png,
+        )
     except Exception as exc:
         print(f"\nPlot tidak bisa ditampilkan: {exc}")
 

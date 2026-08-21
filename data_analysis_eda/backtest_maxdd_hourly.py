@@ -31,12 +31,12 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 
 # Ubah sesuai kebutuhan:
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
+INPUT_FOLDER = Path("/home/rfi212/Documents/mt5/80")
 INPUT_PATTERN = "*.csv"
 INPUT_FILES: List[Path] = []
 
 # Threshold DD yang ingin dianalisis.
-MAX_DD = 800
+MAX_DD = 4000
 
 # Mode hitung kejadian:
 # - "crossing"  = hitung saat DD baru menembus threshold dari bawah
@@ -230,7 +230,6 @@ def build_event_df(all_df: pd.DataFrame, max_dd: float, count_mode: str) -> pd.D
 
 def plot_analysis(
     hour_summary: pd.DataFrame,
-    severity_summary: pd.DataFrame,
     day_hour_counts: pd.DataFrame,
     max_dd: float,
     count_mode: str,
@@ -260,8 +259,8 @@ def plot_analysis(
     norm = colors.Normalize(vmin=0.0, vmax=max(float(event_counts.max()), 1.0))
     heat_norm = colors.Normalize(vmin=0.0, vmax=max(float(day_hour_counts.to_numpy(dtype=float).max()), 1.0))
 
-    fig = plt.figure(figsize=(18, 14))
-    gs = fig.add_gridspec(3, 1, height_ratios=[1.2, 1.0, 1.7], hspace=0.34)
+    fig = plt.figure(figsize=(18, 11))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.7], hspace=0.28)
 
     ax1 = fig.add_subplot(gs[0, 0])
     bar_colors = cmap(norm(event_counts))
@@ -301,45 +300,23 @@ def plot_analysis(
     )
 
     ax2 = fig.add_subplot(gs[1, 0])
-    ax2.plot(severity_summary["hour"], severity_summary["avg_dd"], marker="o", linewidth=2, label="Average DD")
-    ax2.plot(severity_summary["hour"], severity_summary["median_dd"], marker="o", linewidth=2, label="Median DD")
-    ax2.plot(severity_summary["hour"], severity_summary["max_dd"], marker="o", linewidth=2, label="Max DD")
-    ax2.set_xticks(range(24))
-    ax2.set_xlim(-0.5, 23.5)
-    ax2.set_xlabel(f"Jam {time_label}")
-    ax2.set_ylabel("DD saat event")
-    ax2.set_title("2) Severity DD per Jam")
-    ax2.grid(alpha=0.25)
-    ax2.legend(loc="upper right")
-    ax2.text(
-        0.01,
-        0.98,
-        "Yang dihitung adalah kejadian DD yang lolos threshold",
-        transform=ax2.transAxes,
-        ha="left",
-        va="top",
-        fontsize=9,
-        color="#455A64",
-    )
-
-    ax3 = fig.add_subplot(gs[2, 0])
     heat = day_hour_counts.to_numpy(dtype=float)
-    im = ax3.imshow(heat, aspect="auto", cmap="RdYlGn_r", norm=heat_norm)
+    im = ax2.imshow(heat, aspect="auto", cmap="RdYlGn_r", norm=heat_norm)
     day_labels = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-    ax3.set_yticks(range(7))
-    ax3.set_yticklabels(day_labels)
-    ax3.set_xticks(range(24))
-    ax3.set_xlabel(f"Jam {time_label}")
-    ax3.set_ylabel("Hari")
-    ax3.set_title("3) Heatmap Hari x Jam WIB (Jumlah event)")
+    ax2.set_yticks(range(7))
+    ax2.set_yticklabels(day_labels)
+    ax2.set_xticks(range(24))
+    ax2.set_xlabel(f"Jam {time_label}")
+    ax2.set_ylabel("Hari")
+    ax2.set_title("2) Heatmap Hari x Jam WIB (Jumlah event)")
 
     for day_idx in range(day_hour_counts.shape[0]):
         for hour_idx in range(day_hour_counts.shape[1]):
             val = float(day_hour_counts.iat[day_idx, hour_idx])
             if val > 0:
-                ax3.text(hour_idx, day_idx, f"{int(val)}", ha="center", va="center", fontsize=6, color="black")
+                ax2.text(hour_idx, day_idx, f"{int(val)}", ha="center", va="center", fontsize=6, color="black")
 
-    cbar = fig.colorbar(im, ax=ax3, orientation="horizontal", pad=0.13, fraction=0.06)
+    cbar = fig.colorbar(im, ax=ax2, orientation="horizontal", pad=0.13, fraction=0.06)
     cbar.set_label("Jumlah kejadian DD >= threshold")
 
     fig.suptitle(
@@ -549,7 +526,7 @@ def main() -> int:
     )
 
     if plot_hourly_view:
-        plot_analysis(hour_summary, severity_summary, day_hour_counts, max_dd, count_mode, input_folder, input_pattern, time_label)
+        plot_analysis(hour_summary, day_hour_counts, max_dd, count_mode, input_folder, input_pattern, time_label)
 
     return 0
 
