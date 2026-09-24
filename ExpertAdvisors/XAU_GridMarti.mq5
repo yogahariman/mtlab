@@ -45,7 +45,7 @@ enum EMaType
 input group "General"
 input long   InpBuyMagic                = 790101; // Magic number for BUY basket
 input long   InpSellMagic               = 790102; // Magic number for SELL basket
-input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only, sell-only, or both-single
+input ETradeMode InpTradeMode           = TRADE_BOTH_SINGLE; // Trading direction: buy-only, sell-only, or both-single
 
 input group "Risk & Execution"
 input int    InpMinSecondsBetweenOrders = 0;     // Min delay between orders
@@ -90,7 +90,7 @@ input double InpStochSellMin               = 80.0;  // SELL allowed when %K >= t
 input group "Trading Session | buy-only: 5:30-17:59 | sell-only: 10:00-17:59"
 input bool   InpUseTimeFilter           = true;   // Enable manual time filter
 input ESessionTimeMode InpSessionTimeMode = SESSION_TIME_WIB; // Session input timezone: broker/UTC/WIB(UTC+7)
-input string InpActiveWindows           = "5:30-17:59"; // Active trading windows: "hh:mm-hh:mm;hh:mm-hh:mm"
+input string InpActiveWindows           = "9:00-17:59"; // Active trading windows: "hh:mm-hh:mm;hh:mm-hh:mm"
 
 input group "Stop Loss / Drawdown"
 input double InpMaxDrawdownMoney        = 5000;   // Close all when floating drawdown >= value (0=off)
@@ -146,39 +146,9 @@ ENUM_POSITION_TYPE g_activeBasketType = POSITION_TYPE_BUY;
 bool   g_activeBasketTypeKnown = false;
 ETradeMode g_effectiveTradeMode = TRADE_BUY_ONLY;
 
-string CleanRelativeFolder(const string folder)
-{
-   string cleaned = folder;
-   StringTrimLeft(cleaned);
-   StringTrimRight(cleaned);
-
-   while(StringLen(cleaned) > 0)
-   {
-      const ushort ch = StringGetCharacter(cleaned, StringLen(cleaned) - 1);
-      if(ch != '\\' && ch != '/')
-         break;
-      cleaned = StringSubstr(cleaned, 0, StringLen(cleaned) - 1);
-   }
-
-   while(StringLen(cleaned) > 0)
-   {
-      const ushort ch = StringGetCharacter(cleaned, 0);
-      if(ch != '\\' && ch != '/')
-         break;
-      cleaned = StringSubstr(cleaned, 1);
-   }
-
-   return cleaned;
-}
-
 bool IsSellMode()
 {
    return (g_effectiveTradeMode == TRADE_SELL_ONLY);
-}
-
-bool IsBothSingleMode()
-{
-   return (g_effectiveTradeMode == TRADE_BOTH_SINGLE);
 }
 
 long MagicForType(const ENUM_POSITION_TYPE type)
@@ -331,29 +301,9 @@ bool IsTradeAllowed()
    return true;
 }
 
-bool IsAlgoTradingEnabled()
-{
-   return (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0);
-}
-
 bool IsTesterRun()
 {
    return (MQLInfoInteger(MQL_TESTER) != 0);
-}
-
-int BrokerHour(const datetime whenTime)
-{
-   MqlDateTime dt;
-   TimeToStruct(whenTime, dt);
-   return dt.hour;
-}
-
-int NormalizeHour(const int hour)
-{
-   int h = hour % 24;
-   if(h < 0)
-      h += 24;
-   return h;
 }
 
 int BrokerUtcOffsetHoursNow()

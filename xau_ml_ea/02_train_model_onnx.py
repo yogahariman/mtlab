@@ -1,442 +1,374 @@
+"""Train the XAUUSD single-shot classifier and export it to ONNX.
+
+The target is trade outcome, not simply the next candle direction:
+0 = SELL wins (SL is hit first), 1 = no trade/timeout, 2 = BUY wins.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
-import ta
-
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    brier_score_loss,
-    f1_score,
-    log_loss,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from skl2onnx import convert_sklearn
+from skl2onnx.common.data_types import FloatTensorType
+from onnxmltools import convert_xgboost
+from onnxmltools.convert.common.data_types import FloatTensorType as XGBFloatTensorType
+from xgboost import XGBClassifier
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-SYMBOL_FILE = "XAUUSD"
-ENTRY_TIMEFRAME = "M1"
-CONTEXT_TIMEFRAMES = ["M5"]
-MODEL_NAME = "xgboost"  # random_forest, xgboost, neural_network
-ONNX_PATH = BASE_DIR / "model_xau_stoch_ml.onnx"
-FEATURES_PATH = BASE_DIR / "feature_order.txt"
+ROOT = Path(__file__).resolve().parent
+# Rentang candle M5 yang dipakai sebagai dataset entry/training.
+# Ubah kedua nilai ini untuk menentukan periode data secara hardcode.
+DATA_START = "2025-01-01 00:00:00+00:00"
+DATA_END = "2026-08-31 23:59:59+00:00"
+DATA_DIR = ROOT / "data"
+MODEL_PATH = ROOT / "model_xau_single_shot.onnx"
+FEATURE_ORDER_PATH = ROOT / "feature_order.txt"
+METRICS_PATH = ROOT / "training_metrics.json"
 
-TARGET_BARS = 6
-TP_ATR_MULT = 1.25
-SL_ATR_MULT = 0.90
-OVERSOLD = 20.0
-OVERBOUGHT = 80.0
-TRAIN_RATIO = 0.70
-VALID_RATIO = 0.15
-TRADE_COST = 0.0
+# Downloader menghasilkan nama berdasarkan simbol broker. vx adalah contoh
+# suffix broker; pencarian glob membuat training tetap bekerja untuk XAUUSDm,
+# XAUUSD.v, dan variasi nama lainnya.
+M1_PATTERNS = ("XAUUSD*_M1.csv", "*_M1.csv")
+M5_PATTERNS = ("XAUUSD*_M5.csv", "*_M5.csv")
+H1_PATTERNS = ("XAUUSD*_H1.csv", "*_H1.csv")
+
+ATR_PERIOD = 14
+EMA_FAST = 50
+EMA_SLOW = 200
+EMA_SLOPE_PERIOD = 20
+RSI_PERIOD = 14
+ADX_PERIOD = 14
+BB_PERIOD = 20
+HORIZON_BARS = 12
+SL_ATR_MULTIPLIER = 0.8
+RR = 0.8
+MIN_PROBABILITY = 0.80
 RANDOM_STATE = 42
+MODEL_NAMES = (
+    "logistic_regression", "random_forest", "hist_gradient_boosting", "xgboost", "mlp",
+)
+# Pilih model di sini. Tidak perlu parameter command line.
+MODEL_NAME = "xgboost"
+# Converter XGBoost/onnxmltools pada environment ini mendukung maksimal opset 15.
+ONNX_TARGET_OPSET = 15
+EARLY_STOPPING_ROUNDS = 50
+TRAIN_RATIO = 0.70
+TEST_RATIO = 0.15
+VALIDATION_RATIO = 0.15
 
-TIMEFRAME_MINUTES = {
-    "M1": 1,
-    "M5": 5,
-    "M15": 15,
-    "H1": 60,
-    "H4": 240,
-    "D1": 1440,
-}
-
-
-def data_path(timeframe: str) -> Path:
-    return DATA_DIR / f"{SYMBOL_FILE}_{timeframe}.csv"
-
-
-def load_cached_rates(timeframe: str) -> pd.DataFrame:
-    path = data_path(timeframe)
-    if not path.exists():
-        raise FileNotFoundError(f"Data cache not found: {path}. Run 01_download_data.py first.")
-
-    df = pd.read_csv(path)
-    df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df.drop_duplicates(subset="time").sort_values("time").set_index("time")
+M5_FEATURES = [
+    "norm_atr_14", "bb_width", "body_to_range", "dist_ema_50",
+    "dist_ema_200", "ema_slope_20", "rsi_scaled", "adx_scaled",
+    "log_return_1", "upper_shadow_ratio", "lower_shadow_ratio",
+    "hour_sin", "hour_cos", "norm_spread",
+]
+H1_FEATURES = ["h1_dist_ema_50", "h1_dist_ema_200", "h1_ema_slope_20", "h1_adx_scaled"]
+FEATURES = M5_FEATURES + H1_FEATURES
 
 
-def shift_to_close_time(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
-    shifted = df.copy()
-    shifted.index = shifted.index + pd.to_timedelta(TIMEFRAME_MINUTES[timeframe], unit="m")
-    return shifted
+def find_data(patterns: tuple[str, ...]) -> Path:
+    for pattern in patterns:
+        matches = sorted(DATA_DIR.glob(pattern))
+        if matches:
+            return matches[0]
+    raise FileNotFoundError(f"No data found in {DATA_DIR} for {patterns}")
 
 
-def build_common_features(rates: pd.DataFrame, timeframe: str) -> pd.DataFrame:
-    data = pd.DataFrame(index=rates.index)
-    open_ = rates["open"].astype(float)
-    high = rates["high"].astype(float)
-    low = rates["low"].astype(float)
-    close = rates["close"].astype(float)
-    tick_volume = rates["tick_volume"].astype(float)
-    prefix = timeframe.lower()
-
-    data[f"{prefix}_last"] = close.diff()
-    data[f"{prefix}_last_3"] = data[f"{prefix}_last"].rolling(3).mean()
-    data[f"{prefix}_last_11"] = data[f"{prefix}_last"].rolling(11).mean()
-    data[f"{prefix}_range"] = high - low
-    data[f"{prefix}_body"] = close - open_
-    data[f"{prefix}_atr_14"] = ta.volatility.average_true_range(high, low, close, window=14, fillna=False)
-    data[f"{prefix}_volume_ratio_20"] = tick_volume / tick_volume.rolling(20).mean()
-
-    sma_12 = ta.trend.sma_indicator(close, window=12, fillna=False)
-    sma_48 = ta.trend.sma_indicator(close, window=48, fillna=False)
-    data[f"{prefix}_close_sma_12"] = close - sma_12
-    data[f"{prefix}_close_sma_48"] = close - sma_48
-    data[f"{prefix}_sma_12_slope"] = sma_12.diff()
-    data[f"{prefix}_rsi_14"] = ta.momentum.rsi(close, window=14, fillna=False)
-
-    macd = ta.trend.MACD(close, window_fast=12, window_slow=24, window_sign=9, fillna=False)
-    macd_main = macd.macd()
-    macd_signal = macd.macd_signal()
-    data[f"{prefix}_macd_main"] = macd_main
-    data[f"{prefix}_macd_signal"] = macd_signal
-    data[f"{prefix}_macd_sig_main"] = macd_signal - macd_main
-
-    return shift_to_close_time(data, timeframe)
+def load_ohlc(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, parse_dates=["time"])
+    required = {"time", "open", "high", "low", "close"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"{path.name} is missing columns: {sorted(missing)}")
+    df = df.sort_values("time").drop_duplicates("time").reset_index(drop=True)
+    df = df.set_index("time")
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    return df
 
 
-def simulate_candidate_success(
-    rates: pd.DataFrame,
-    signal_index: int,
-    direction: float,
-    entry_price: float,
-    tp_distance: float,
-    sl_distance: float,
-    target_bars: int,
-) -> float:
-    last_index = min(signal_index + target_bars, len(rates) - 1)
-    for idx in range(signal_index + 1, last_index + 1):
-        bar_open = float(rates["open"].iloc[idx])
-        bar_high = float(rates["high"].iloc[idx])
-        bar_low = float(rates["low"].iloc[idx])
-
-        if direction > 0:
-            tp_hit = bar_open >= entry_price + tp_distance or bar_high >= entry_price + tp_distance
-            sl_hit = bar_open <= entry_price - sl_distance or bar_low <= entry_price - sl_distance
-        else:
-            tp_hit = bar_open <= entry_price - tp_distance or bar_low <= entry_price - tp_distance
-            sl_hit = bar_open >= entry_price + sl_distance or bar_high >= entry_price + sl_distance
-
-        if tp_hit and sl_hit:
-            return 0.0
-        if sl_hit:
-            return 0.0
-        if tp_hit:
-            return 1.0
-
-    return 0.0
+def rsi(close: pd.Series, period: int) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return (100 - 100 / (1 + rs)).fillna(50)
 
 
-def build_entry_dataset(entry_rates: pd.DataFrame) -> pd.DataFrame:
-    base = build_common_features(entry_rates, ENTRY_TIMEFRAME)
-    delta = pd.to_timedelta(TIMEFRAME_MINUTES[ENTRY_TIMEFRAME], unit="m")
+def atr(df: pd.DataFrame, period: int) -> pd.Series:
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
 
-    high = entry_rates["high"].astype(float)
-    low = entry_rates["low"].astype(float)
-    close = entry_rates["close"].astype(float)
 
-    stoch = ta.momentum.StochasticOscillator(
-        high=high,
-        low=low,
-        close=close,
-        window=14,
-        smooth_window=3,
-        fillna=False,
-    )
-    stoch_k = stoch.stoch()
-    stoch_d = stoch.stoch_signal()
-    prefix = ENTRY_TIMEFRAME.lower()
-    stoch_df = pd.DataFrame(
-        {
-            f"{prefix}_stoch_k": stoch_k,
-            f"{prefix}_stoch_d": stoch_d,
-            f"{prefix}_stoch_k_minus_d": stoch_k - stoch_d,
-            f"{prefix}_stoch_distance_from_20": stoch_k - OVERSOLD,
-            f"{prefix}_stoch_distance_from_80": stoch_k - OVERBOUGHT,
-        },
-        index=entry_rates.index,
-    )
-    stoch_df.index = stoch_df.index + delta
+def adx(df: pd.DataFrame, period: int) -> pd.Series:
+    up = df["high"].diff()
+    down = -df["low"].diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    tr = atr(df, period)
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / tr
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / tr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(alpha=1 / period, adjust=False).mean().fillna(0)
 
-    direction = pd.Series(np.nan, index=entry_rates.index, dtype=float)
-    direction[stoch_k < OVERSOLD] = 1.0
-    direction[stoch_k > OVERBOUGHT] = -1.0
-    direction.index = direction.index + delta
-    direction.name = f"{prefix}_candidate_direction"
 
-    target = pd.Series(np.nan, index=entry_rates.index, dtype=float)
-    target.index = target.index + delta
-    atr = base[f"{prefix}_atr_14"].reset_index(drop=True)
+def make_features(df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
+    close = df["close"]
+    candle_range = (df["high"] - df["low"]).replace(0, np.nan)
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=EMA_FAST, adjust=False).mean()
+    ema200 = close.ewm(span=EMA_SLOW, adjust=False).mean()
+    atr14 = atr(df, ATR_PERIOD)
+    middle = close.rolling(BB_PERIOD).mean()
+    std = close.rolling(BB_PERIOD).std()
+    rsi14 = rsi(close, RSI_PERIOD)
+    adx14 = adx(df, ADX_PERIOD)
+    body_high = df[["open", "close"]].max(axis=1)
+    body_low = df[["open", "close"]].min(axis=1)
 
-    for i in range(len(entry_rates) - TARGET_BARS):
-        direction_i = direction.iloc[i]
-        if not np.isfinite(direction_i) or direction_i == 0:
+    if prefix:
+        return pd.DataFrame({
+            f"{prefix}dist_ema_50": (close - ema50) / close,
+            f"{prefix}dist_ema_200": (close - ema200) / close,
+            f"{prefix}ema_slope_20": ema20 / ema20.shift(EMA_SLOPE_PERIOD) - 1,
+            f"{prefix}adx_scaled": adx14 / 100,
+        }, index=df.index)
+
+    spread = pd.to_numeric(df.get("spread", pd.Series(0, index=df.index)), errors="coerce")
+    spread = spread.fillna(0)
+    return pd.DataFrame({
+        "norm_atr_14": atr14 / close,
+        "bb_width": (4 * std / middle).replace([np.inf, -np.inf], np.nan),
+        "body_to_range": (body_high - body_low) / candle_range,
+        "dist_ema_50": (close - ema50) / close,
+        "dist_ema_200": (close - ema200) / close,
+        "ema_slope_20": ema20 / ema20.shift(EMA_SLOPE_PERIOD) - 1,
+        "rsi_scaled": rsi14 / 100,
+        "adx_scaled": adx14 / 100,
+        "log_return_1": np.log(close / close.shift(1)),
+        "upper_shadow_ratio": (df["high"] - body_high) / candle_range,
+        "lower_shadow_ratio": (body_low - df["low"]) / candle_range,
+        "hour_sin": np.sin(2 * np.pi * df.index.hour / 24),
+        "hour_cos": np.cos(2 * np.pi * df.index.hour / 24),
+        "norm_spread": spread / close,
+    }, index=df.index)
+
+
+def make_labels(entry_df: pd.DataFrame, features: pd.DataFrame, outcome_df: pd.DataFrame) -> pd.Series:
+    """Triple-barrier labels for M5 entries, evaluated using M1 candles."""
+    atr_values = (features["norm_atr_14"] * entry_df["close"]).to_numpy()
+    outcome_times = outcome_df.index.to_numpy()
+    highs = outcome_df["high"].to_numpy()
+    lows = outcome_df["low"].to_numpy()
+    labels = np.full(len(entry_df), 1, dtype=np.int64)
+    horizon = pd.Timedelta(minutes=HORIZON_BARS * 5)
+    for i, entry_time in enumerate(entry_df.index):
+        distance = atr_values[i] * SL_ATR_MULTIPLIER
+        if not np.isfinite(distance) or distance <= 0:
             continue
-
-        atr_i = float(atr.iloc[i])
-        if not np.isfinite(atr_i) or atr_i <= 0:
-            continue
-
-        entry_price = float(close.iloc[i])
-        tp_distance = atr_i * TP_ATR_MULT
-        sl_distance = atr_i * SL_ATR_MULT
-        target.iloc[i] = simulate_candidate_success(
-            entry_rates,
-            i,
-            direction_i,
-            entry_price,
-            tp_distance,
-            sl_distance,
-            TARGET_BARS,
-        )
-
-    entry = base.join(stoch_df)
-    entry[f"{prefix}_candidate_direction"] = direction
-    entry["target"] = target
-    return entry
-
-
-def build_dataset() -> tuple[pd.DataFrame, pd.Series, list[str]]:
-    entry_rates = load_cached_rates(ENTRY_TIMEFRAME)
-    entry = build_entry_dataset(entry_rates)
-
-    X = entry.drop(columns=["target"]).sort_index()
-    y = entry["target"].sort_index()
-
-    for timeframe in CONTEXT_TIMEFRAMES:
-        context_rates = load_cached_rates(timeframe)
-        context_features = build_common_features(context_rates, timeframe)
-        X = pd.merge_asof(
-            X.sort_index(),
-            context_features.sort_index(),
-            left_index=True,
-            right_index=True,
-            direction="backward",
-        )
-
-    hours = pd.Series(X.index.hour, index=X.index, dtype=float)
-    days = pd.Series((X.index.dayofweek + 1) % 7, index=X.index, dtype=float)
-    X["time_hour_sin"] = np.sin(2 * np.pi * hours / 24)
-    X["time_hour_cos"] = np.cos(2 * np.pi * hours / 24)
-    X["time_dow_sin"] = np.sin(2 * np.pi * days / 7)
-    X["time_dow_cos"] = np.cos(2 * np.pi * days / 7)
-
-    dataset = X.join(y.rename("target"))
-    dataset = dataset.replace([np.inf, -np.inf], np.nan).dropna()
-
-    features = [c for c in dataset.columns if c != "target"]
-    return dataset[features], dataset["target"], features
+        start = outcome_df.index.searchsorted(entry_time, side="right")
+        end = outcome_df.index.searchsorted(entry_time + horizon, side="right")
+        entry = entry_df["close"].iloc[i]
+        buy_sl, buy_tp = entry - distance, entry + distance * RR
+        sell_sl, sell_tp = entry + distance, entry - distance * RR
+        for j in range(start, min(end, len(outcome_df))):
+            buy_sl_hit, buy_tp_hit = lows[j] <= buy_sl, highs[j] >= buy_tp
+            sell_sl_hit, sell_tp_hit = highs[j] >= sell_sl, lows[j] <= sell_tp
+            if buy_sl_hit and buy_tp_hit:
+                labels[i] = 0
+                break
+            if sell_sl_hit and sell_tp_hit:
+                labels[i] = 2
+                break
+            if buy_tp_hit:
+                labels[i] = 2
+                break
+            if sell_tp_hit:
+                labels[i] = 0
+                break
+            if buy_sl_hit or sell_sl_hit:
+                labels[i] = 0 if buy_sl_hit else 2
+                break
+    return pd.Series(labels, index=entry_df.index, name="target")
 
 
-def split_time_series(X: pd.DataFrame, y: pd.Series):
-    train_end = int(len(X) * TRAIN_RATIO)
-    valid_end = int(len(X) * (TRAIN_RATIO + VALID_RATIO))
-    return (
-        X.iloc[:train_end],
-        X.iloc[train_end:valid_end],
-        X.iloc[valid_end:],
-        y.iloc[:train_end],
-        y.iloc[train_end:valid_end],
-        y.iloc[valid_end:],
-    )
-
-
-def create_model(name: str):
+def build_model(name: str):
+    if name == "logistic_regression":
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", LogisticRegression(
+                max_iter=1000, class_weight="balanced", C=0.5,
+                random_state=RANDOM_STATE,
+            )),
+        ])
     if name == "random_forest":
         return RandomForestClassifier(
-            n_estimators=400,
-            max_depth=12,
-            max_leaf_nodes=220,
-            min_samples_split=6,
-            min_samples_leaf=3,
-            bootstrap=True,
-            class_weight="balanced_subsample",
+            n_estimators=300, max_depth=12, min_samples_leaf=20,
+            class_weight="balanced_subsample", n_jobs=-1,
             random_state=RANDOM_STATE,
-            n_jobs=-1,
         )
-
+    if name == "hist_gradient_boosting":
+        return HistGradientBoostingClassifier(
+            max_iter=250, learning_rate=0.05, max_leaf_nodes=31,
+            l2_regularization=1.0, random_state=RANDOM_STATE,
+        )
     if name == "xgboost":
-        from xgboost import XGBClassifier
-
         return XGBClassifier(
-            n_estimators=800,
-            learning_rate=0.02,
-            max_depth=5,
-            min_child_weight=20,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="binary:logistic",
-            random_state=RANDOM_STATE,
-            n_jobs=-1,
-            tree_method="hist",
-            eval_metric="logloss",
-        )
+                n_estimators=25000,         # Dinaikkan tinggi, namun WAJIB menggunakan early_stopping_rounds
+                max_depth=4,                # Dibuat dangkal (rentang 3-5 sangat ideal untuk data trading agar tidak overfit ke noise)
+                learning_rate=0.015,        # Diturunkan sedikit agar pencarian pola lebih stabil dan presisi
+                subsample=0.7,              # Dikurangi agar model lebih tangguh terhadap noise pasar
+                colsample_bytree=0.7,       # Dikurangi agar model tidak terlalu bergantung pada kombinasi fitur tertentu
+                min_child_weight=20,        # Dinaikkan signifikan (min 20-50) agar model tidak membuat daun berdasarkan sedikit bar / outlier
+                gamma=0.2,                  # Regularisasi konservatif untuk memotong cabang yang tidak krusial
+                reg_alpha=0.5,              # Ditambah untuk penalitas L1 (mematikan fitur noise secara implisit)
+                reg_lambda=2.0,             # Ditambah untuk penalitas L2 (menjaga bobot prediksi tetap stabil)
+                objective="multi:softprob",
+                num_class=3,
+                eval_metric="mlogloss",
+                early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+                # tree_method="hist",
+                n_jobs=-1,
+                random_state=RANDOM_STATE
+            )
 
-    if name == "neural_network":
-        return Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                (
-                    "mlp",
-                    MLPClassifier(
-                        hidden_layer_sizes=(96, 48),
-                        alpha=0.001,
-                        learning_rate_init=0.001,
-                        max_iter=300,
-                        early_stopping=True,
-                        random_state=RANDOM_STATE,
-                    ),
-                ),
-            ]
-        )
-
-    raise ValueError(f"Unsupported model: {name}")
-
-
-def evaluate(label: str, model, X: pd.DataFrame, y: pd.Series) -> np.ndarray:
-    proba = np.nan_to_num(model.predict_proba(X)[:, 1], nan=0.0, posinf=0.0, neginf=0.0)
-    pred = (proba >= 0.5).astype(int)
-    print(f"\n{label}")
-    print("Rows:", len(X))
-    print("Accuracy:", round(accuracy_score(y, pred), 6))
-    print("Precision:", round(precision_score(y, pred, zero_division=0), 6))
-    print("Recall:", round(recall_score(y, pred, zero_division=0), 6))
-    print("F1:", round(f1_score(y, pred, zero_division=0), 6))
-    print("ROC AUC:", round(roc_auc_score(y, proba), 6) if len(np.unique(y)) > 1 else "nan")
-    print("PR AUC:", round(average_precision_score(y, proba), 6) if len(np.unique(y)) > 1 else "nan")
-    print("Brier:", round(brier_score_loss(y, proba), 6))
-    if len(np.unique(y)) > 1:
-        print("LogLoss:", round(log_loss(y, np.vstack([1 - proba, proba]).T, labels=[0, 1]), 6))
-    else:
-        print("LogLoss: nan")
-    return proba
-
-
-def evaluate_thresholds(pred_train: np.ndarray, pred_test: np.ndarray, y_test: pd.Series) -> None:
-    percentiles = np.arange(50, 100, 5)
-    thresholds = np.percentile(pred_train, percentiles)
-
-    pred_matrix = np.tile(pred_test[:, None], (1, thresholds.size))
-    position = (pred_matrix >= thresholds[None, :]).astype(float)
-    target_matrix = np.tile(y_test.values[:, None], (1, thresholds.size))
-    trade_outcome = np.where(target_matrix > 0, 1.0, -1.0)
-    strategy_ret = position * trade_outcome - np.abs(position) * TRADE_COST
-
-    trades = np.sum(position != 0, axis=0)
-    wins = np.sum((position != 0) & (target_matrix > 0), axis=0)
-    losses = np.sum((position != 0) & (target_matrix <= 0), axis=0)
-    gains = wins
-
-    results = pd.DataFrame(
-        {
-            "percentile": percentiles,
-            "threshold": thresholds,
-            "trades": trades,
-            "final_equity": np.sum(strategy_ret, axis=0),
-            "mean_return": np.sum(strategy_ret, axis=0) / (trades + 1e-9),
-            "win_rate": wins / (trades + 1e-9),
-            "profit_factor": gains / (losses + 1e-9),
-        }
-    )
-    print("\nThreshold backtest prototype")
-    print(results.to_string(index=False, float_format="%.6f"))
-
-
-def export_onnx(model_name: str, model, n_features: int, output_path: Path) -> None:
-    from skl2onnx.common.data_types import FloatTensorType
-    from skl2onnx import convert_sklearn
-
-    initial_types = [("float_input", FloatTensorType([None, n_features]))]
-    onnx_model = convert_sklearn(
-        model,
-        initial_types=initial_types,
-        options={id(model): {"zipmap": False}},
-    )
-
-    try:
-        import onnx
-        from onnx import TensorProto, helper, numpy_helper
-    except ImportError as exc:
-        raise RuntimeError(
-            "Package onnx is required to rewrite classifier output into a single probability tensor."
-        ) from exc
-
-    graph = onnx_model.graph
-    probability_output = None
-    for output in graph.output:
-        if "label" not in output.name.lower():
-            probability_output = output.name
-            break
-    if probability_output is None:
-        raise RuntimeError("Unable to locate classifier probability output in ONNX graph.")
-
-    positive_probability_name = "positive_class_probability"
-    class_index_name = "positive_class_index"
-    class_index_tensor = numpy_helper.from_array(np.array([1], dtype=np.int64), name=class_index_name)
-    graph.initializer.append(class_index_tensor)
-    graph.node.append(
-        helper.make_node(
-            "Gather",
-            inputs=[probability_output, class_index_name],
-            outputs=[positive_probability_name],
-            axis=1,
-        )
-    )
-
-    del graph.output[:]
-    graph.output.extend(
-        [helper.make_tensor_value_info(positive_probability_name, TensorProto.FLOAT, [None, 1])]
-    )
-
-    output_path.write_bytes(onnx_model.SerializeToString())
-    print(f"\nSaved ONNX model: {output_path}")
-
-
-def save_feature_order(features: list[str]) -> None:
-    FEATURES_PATH.write_text("\n".join(features) + "\n", encoding="utf-8")
-    print(f"Saved feature order: {FEATURES_PATH}")
+            
+        # XGBClassifier(
+        #     n_estimators=300, max_depth=21, learning_rate=0.01,
+        #     subsample=0.85, colsample_bytree=0.85,
+        #     min_child_weight=10, objective="multi:softprob",
+        #     num_class=3, eval_metric="mlogloss", early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+                # tree_method="hist",
+        #     n_jobs=-1, random_state=RANDOM_STATE,
+        # )
+    if name == "mlp":
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", MLPClassifier(
+                hidden_layer_sizes=(99, 99, 99, 99, 99), activation="relu", solver="adam",
+                alpha=1e-4, batch_size=512, learning_rate_init=1e-3,
+                max_iter=100, early_stopping=False,
+                n_iter_no_change=12, random_state=RANDOM_STATE,
+            )),
+        ])
+    raise ValueError(f"Unknown model {name!r}. Choose one of: {', '.join(MODEL_NAMES)}")
 
 
 def main() -> None:
-    if MODEL_NAME not in {"random_forest", "xgboost", "neural_network"}:
-        raise ValueError(f"Unsupported MODEL_NAME: {MODEL_NAME}")
+    if MODEL_NAME not in MODEL_NAMES:
+        raise ValueError(
+            f"Unknown MODEL_NAME={MODEL_NAME!r}. Choose one of: {', '.join(MODEL_NAMES)}"
+        )
+    m5_path, h1_path = find_data(M5_PATTERNS), find_data(H1_PATTERNS)
+    m1_path = find_data(M1_PATTERNS)
+    print(f"M5: {m5_path.name}\nM1: {m1_path.name}\nH1: {h1_path.name}")
+    m5, m1, h1 = load_ohlc(m5_path), load_ohlc(m1_path), load_ohlc(h1_path)
+    x_m5 = make_features(m5)
+    x_h1 = make_features(h1, prefix="h1_")
+    # H1 candle must already be closed at the M5 timestamp: no look-ahead.
+    x_h1 = x_h1.shift(1)
+    x_h1 = x_h1.reindex(m5.index, method="ffill")
+    x = pd.concat([x_m5, x_h1], axis=1)[FEATURES]
+    # Features are M5; SL/TP outcome is evaluated from subsequent M1 candles.
+    y = make_labels(m5, x_m5, m1)
+    data = pd.concat([x, y], axis=1).replace([np.inf, -np.inf], np.nan).dropna()
+    # Batasi candle entry/training sesuai rentang hardcode; feature tetap
+    # dihitung dari seluruh history agar EMA/ATR tidak kehilangan warm-up.
+    data = data.loc[DATA_START:DATA_END]
+    data = data.iloc[:-HORIZON_BARS]
+    print(f"Selected data period: {data.index.min()} -> {data.index.max()}")
+    if len(data) < 1000:
+        raise RuntimeError(f"Too little usable data for training: {len(data)} rows")
 
-    print(f"Loading data for {SYMBOL_FILE}...")
-    X, y, features = build_dataset()
-    print(f"Dataset rows: {len(X)}")
-    print(f"Feature count: {len(features)}")
-    print(f"Positive label rate: {y.mean():.6f}")
-    print("Feature order for EA input:")
-    for idx, col in enumerate(features):
-        print(f"  f{idx}: {col}")
+    if not np.isclose(TRAIN_RATIO + VALIDATION_RATIO + TEST_RATIO, 1.0):
+        raise ValueError("TRAIN_RATIO + VALIDATION_RATIO + TEST_RATIO harus sama dengan 1.0")
+    train_end = int(len(data) * TRAIN_RATIO)
+    validation_end = int(len(data) * (TRAIN_RATIO + VALIDATION_RATIO))
+    train = data.iloc[:train_end]
+    validation = data.iloc[train_end:validation_end]
+    test = data.iloc[validation_end:]
+    print(f"Training period: {train.index.min()} -> {train.index.max()}")
+    print(f"Validation period: {validation.index.min()} -> {validation.index.max()}")
+    print(f"Testing period:    {test.index.min()} -> {test.index.max()}")
+    model = build_model(MODEL_NAME)
+    x_train = train[FEATURES].to_numpy(dtype=np.float32)
+    x_validation = validation[FEATURES].to_numpy(dtype=np.float32)
+    x_test = test[FEATURES].to_numpy(dtype=np.float32)
+    y_train = train["target"].to_numpy(dtype=np.int64)
+    y_validation = validation["target"].to_numpy(dtype=np.int64)
+    y_test = test["target"].to_numpy(dtype=np.int64)
+    # onnxmltools converter untuk XGBoost versi ini hanya menerima feature
+    # names otomatis f0, f1, ...; mapping nama feature tetap disimpan terpisah.
+    if MODEL_NAME == "xgboost":
+        model.fit(x_train, y_train, eval_set=[(x_validation, y_validation)], verbose=False)
+    else:
+        model.fit(train[FEATURES].astype(np.float32), y_train)
+    pred_train = model.predict(x_train if MODEL_NAME == "xgboost" else train[FEATURES].astype(np.float32))
+    pred_validation = model.predict(x_validation if MODEL_NAME == "xgboost" else validation[FEATURES].astype(np.float32))
+    pred_test = model.predict(x_test if MODEL_NAME == "xgboost" else test[FEATURES].astype(np.float32))
+    print(f"Model: {MODEL_NAME}")
+    print("\nClassification report - TRAIN:")
+    print(classification_report(y_train, pred_train, labels=[0, 1, 2],
+                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
+    print("Confusion matrix TRAIN [SELL, NO_TRADE, BUY]:")
+    print(confusion_matrix(y_train, pred_train, labels=[0, 1, 2]))
+    print("\nClassification report - VALIDATION:")
+    print(classification_report(y_validation, pred_validation, labels=[0, 1, 2],
+                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
+    print("Confusion matrix VALIDATION [SELL, NO_TRADE, BUY]:")
+    print(confusion_matrix(y_validation, pred_validation, labels=[0, 1, 2]))
+    print("\nClassification report - TEST:")
+    print(classification_report(y_test, pred_test, labels=[0, 1, 2],
+                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
+    print("Confusion matrix TEST [SELL, NO_TRADE, BUY]:")
+    print(confusion_matrix(y_test, pred_test, labels=[0, 1, 2]))
 
-    save_feature_order(features)
-
-    X_train, X_valid, X_test, y_train, y_valid, y_test = split_time_series(X, y)
-
-    model = create_model(MODEL_NAME)
-    print(f"\nTraining model: {MODEL_NAME}")
-    model.fit(X_train, y_train)
-
-    pred_train = evaluate("Train", model, X_train, y_train)
-    evaluate("Validation", model, X_valid, y_valid)
-    pred_test = evaluate("Test", model, X_test, y_test)
-    evaluate_thresholds(pred_train, pred_test, y_test)
-
-    try:
-        export_onnx(MODEL_NAME, model, X_train.shape[1], ONNX_PATH)
-    except Exception as exc:
-        print(f"\nONNX export skipped/failed: {exc}")
+    if MODEL_NAME == "xgboost":
+        onnx_model = convert_xgboost(
+            model, initial_types=[("float_input", XGBFloatTensorType([None, len(FEATURES)]))],
+            target_opset=ONNX_TARGET_OPSET,
+        )
+    else:
+        onnx_model = convert_sklearn(
+            model, initial_types=[("float_input", FloatTensorType([None, len(FEATURES)]))],
+            options={id(model): {"zipmap": False}}, target_opset=ONNX_TARGET_OPSET,
+        )
+    MODEL_PATH.write_bytes(onnx_model.SerializeToString())
+    FEATURE_ORDER_PATH.write_text("\n".join(FEATURES) + "\n", encoding="utf-8")
+    metrics = {
+        "model": MODEL_NAME,
+        "features": FEATURES, "classes": {"0": "SELL", "1": "NO_TRADE", "2": "BUY"},
+        "rows": len(data), "train_rows": len(train), "validation_rows": len(validation), "test_rows": len(test),
+        "train_start": train.index.min().isoformat(),
+        "train_end": train.index.max().isoformat(),
+        "validation_start": validation.index.min().isoformat(),
+        "validation_end": validation.index.max().isoformat(),
+        "test_start": test.index.min().isoformat(),
+        "test_end": test.index.max().isoformat(),
+        "horizon_bars": HORIZON_BARS, "sl_atr_multiplier": SL_ATR_MULTIPLIER,
+        "rr": RR, "min_probability": MIN_PROBABILITY,
+        "validation_accuracy": float((pred_validation == y_validation).mean()),
+        "test_accuracy": float((pred_test == y_test).mean()),
+    }
+    METRICS_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"Saved ONNX model: {MODEL_PATH}")
+    print(f"Saved feature order: {FEATURE_ORDER_PATH}")
 
 
 if __name__ == "__main__":

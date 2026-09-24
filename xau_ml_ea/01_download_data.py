@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -7,15 +8,30 @@ import pandas as pd
 import pytz
 
 
-SYMBOL = "XAUUSD"
-TIMEFRAMES_TO_DOWNLOAD = ["M1", "M5"]
-FROM_YEAR = 2015
-FALLBACK_BARS = 100_000
+SYMBOL = "XAUUSD.vx"
+# M1, M5, dan H1 digunakan untuk entry dan konteks/filter trend.
+TIMEFRAMES_TO_DOWNLOAD = ["M1", "M5", "M15", "H1", "H4", "D1"]
+FROM_YEAR = 2024
+FALLBACK_BARS = 1_000_000_000
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+REQUIRED_COLUMNS = {
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "tick_volume",
+}
+
 # Isi kalau pakai mt5linux/Wine. Biarkan None kalau pakai package MetaTrader5 native.
-# MT5_PATH = None
-MT5_PATH = "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+MT5_PATH = None
+# MT5_PATH = "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+
+# Kredensial akun demo. Ganti tiga nilai berikut sesuai akun MT5 Anda.
+MT5_LOGIN = 372028191
+MT5_PASSWORD = "hariman@H22"
+MT5_SERVER = "ValetaxIntl_Live-2"
 
 TIMEFRAMES = {
     "M1": "TIMEFRAME_M1",
@@ -29,14 +45,58 @@ TIMEFRAMES = {
 
 
 def import_mt5():
+    # Di Linux, prioritaskan mt5linux agar tidak mencoba IPC native ke
+    # terminal64.exe. Backend native MetaTrader5 ditujukan terutama untuk Windows.
+    if sys.platform != "win32":
+        try:
+            from mt5linux import MetaTrader5
+
+            if (
+                not MT5_LOGIN
+                or MT5_PASSWORD == "GANTI_DENGAN_PASSWORD_DEMO"
+                or MT5_SERVER == "GANTI_DENGAN_SERVER_BROKER"
+            ):
+                raise RuntimeError(
+                    "Isi MT5_LOGIN, MT5_PASSWORD, dan MT5_SERVER pada "
+                    "bagian konfigurasi 01_download_data.py."
+                )
+
+            return MetaTrader5(
+                mt5_login=MT5_LOGIN,
+                mt5_password=MT5_PASSWORD,
+                mt5_server=MT5_SERVER,
+            )
+        except ImportError:
+            pass
+
     try:
         import MetaTrader5 as mt5
 
         return mt5
-    except ImportError:
-        from mt5linux import MetaTrader5
+    except ImportError as native_error:
+        try:
+            from mt5linux import MetaTrader5
+        except ImportError as linux_error:
+            raise RuntimeError(
+                "MetaTrader5 tidak tersedia. Install package native "
+                "MetaTrader5 atau mt5linux pada environment Python ini."
+            ) from linux_error
 
-        return MetaTrader5()
+        try:
+            return MetaTrader5()
+        except ConnectionRefusedError as connection_error:
+            raise RuntimeError(
+                "Tidak dapat terhubung ke bridge mt5linux (Connection refused). "
+                "Pastikan terminal MetaTrader 5 berjalan di Wine dan bridge "
+                "mt5linux sudah dijalankan sebelum script ini. Jika memakai "
+                "package MetaTrader5 native, install package tersebut dan "
+                "gunakan Python environment yang sesuai dengan instalasinya."
+            ) from connection_error
+        except OSError as connection_error:
+            raise RuntimeError(
+                "Koneksi ke MetaTrader 5/mt5linux gagal. Pastikan MT5 dan "
+                "bridge aktif, lalu periksa MT5_PATH serta konfigurasi koneksi."
+            ) from connection_error
 
 
 def output_path(symbol: str, timeframe: str) -> Path:
@@ -45,7 +105,10 @@ def output_path(symbol: str, timeframe: str) -> Path:
 
 
 def initialize_mt5(mt5) -> None:
-    ok = mt5.initialize(path=MT5_PATH) if MT5_PATH else mt5.initialize()
+    # mt5linux mengelola terminal di dalam container; MT5_PATH hanya relevan
+    # untuk package MetaTrader5 native.
+    is_mt5linux = hasattr(mt5, "container")
+    ok = mt5.initialize() if is_mt5linux or not MT5_PATH else mt5.initialize(path=MT5_PATH)
     if not ok:
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
 
@@ -115,12 +178,47 @@ def download_timeframe(mt5, symbol: str, timeframe_name: str, utc_from: datetime
         )
 
     df = pd.DataFrame(rates)
+    missing_columns = REQUIRED_COLUMNS.difference(df.columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise RuntimeError(
+            f"MT5 returned incomplete {symbol} {timeframe_name} data. "
+            f"Missing columns: {missing}"
+        )
+
     df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-    df = df.drop_duplicates(subset="time").sort_values("time")
+    df = (
+        df.drop_duplicates(subset="time")
+        .sort_values("time")
+        .reset_index(drop=True)
+    )
+
+    # Bar terakhir masih berjalan dan nilainya dapat berubah saat training.
+    if len(df) > 1:
+        df = df.iloc[:-1].copy()
+
+    numeric_columns = ["open", "high", "low", "close", "tick_volume"]
+    if "spread" in df.columns:
+        numeric_columns.append("spread")
+    if "real_volume" in df.columns:
+        numeric_columns.append("real_volume")
+
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    if df.empty:
+        raise RuntimeError(f"No valid OHLC rows remain for {symbol} {timeframe_name}")
+
+    if (df[["open", "high", "low", "close"]] <= 0).any().any():
+        raise RuntimeError(f"Non-positive OHLC value found for {symbol} {timeframe_name}")
+
+    if not df["time"].is_monotonic_increasing:
+        raise RuntimeError(f"Timestamp order is invalid for {symbol} {timeframe_name}")
 
     path = output_path(symbol, timeframe_name)
     df.to_csv(path, index=False)
-    print(f"Saved {len(df)} bars to {path}")
+    print(f"Saved {len(df)} closed bars to {path}")
     print(df.tail(2).to_string(index=False))
 
 

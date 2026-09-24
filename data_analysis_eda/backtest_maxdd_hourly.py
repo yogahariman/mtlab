@@ -31,12 +31,12 @@ INPUT_HEADER_TOKENS = {"<DATE>", "DATE", "<BALANCE>", "BALANCE", "<EQUITY>", "EQ
 
 # Ubah sesuai kebutuhan:
 # INPUT_FOLDER = Path(r"C:\Users\user\Downloads\EA MT5\BackTest")
-INPUT_FOLDER = Path("/home/rfi212/Documents/mt5/80")
+INPUT_FOLDER = Path("/home/rfi212/Documents/mt5")
 INPUT_PATTERN = "*.csv"
 INPUT_FILES: List[Path] = []
 
 # Threshold DD yang ingin dianalisis.
-MAX_DD = 4000
+MAX_DD = 5000
 
 # Mode hitung kejadian:
 # - "crossing"  = hitung saat DD baru menembus threshold dari bawah

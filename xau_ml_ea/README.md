@@ -1,10 +1,4 @@
-# XAU Stoch ML EA
-
-Pipeline ini memisahkan peran seperti berikut:
-
-1. `Stochastic` menjadi gate kandidat entry.
-2. `ML` memutuskan apakah first entry valid lewat `predict_proba`.
-3. EA menjalankan model ONNX untuk eksekusi trading.
+# XAU ML EA
 
 ## File
 
@@ -19,6 +13,57 @@ Pipeline ini memisahkan peran seperti berikut:
 python xau_ml_ea/01_download_data.py
 python xau_ml_ea/02_train_model_onnx.py
 ```
+
+## Menjalankan Downloader dengan Wine
+
+Downloader dijalankan menggunakan Python Windows di dalam Wine dan package
+native `MetaTrader5`. Docker dan `mt5linux` tidak diperlukan.
+
+### 1. Install dependency
+
+```bash
+wine python.exe -m pip install MetaTrader5 pandas pytz
+```
+
+### 2. Jalankan MetaTrader 5
+
+```bash
+wine "/home/rfi212/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+```
+
+Login ke akun demo dan pastikan simbol `XAUUSD` tersedia di Market Watch.
+Di `01_download_data.py`, gunakan:
+
+```python
+MT5_PATH = None
+```
+
+### 3. Jalankan downloader
+
+Buka Wine CMD:
+
+```bash
+wine cmd
+```
+
+Lalu jalankan:
+
+```cmd
+cd Z:\Drive\D\mtlab\xau_ml_ea
+python 01_download_data.py
+```
+
+Script secara default mengunduh timeframe `M5` dan `H1`, membuang candle yang
+masih berjalan, lalu menyimpan hasilnya ke folder `data/`:
+
+```text
+data/XAUUSD_M5.csv
+data/XAUUSD_H1.csv
+```
+
+Jika muncul `IPC initialize failed`, pastikan terminal MT5 sudah berjalan dan
+`MT5_PATH = None`. Jika ingin menjalankan terminal secara otomatis, isi path
+`terminal64.exe` sesuai lokasi instalasi MT5 di Wine.
 
 Pastikan environment Python Anda punya minimal:
 

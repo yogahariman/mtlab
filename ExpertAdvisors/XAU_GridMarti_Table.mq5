@@ -36,7 +36,7 @@ input long   InpMagic                   = 790101; // Magic number->[SYMBOL][EA][
 input ETradeMode InpTradeMode           = TRADE_BUY_ONLY; // Trading direction: buy-only or sell-only
 
 input group "CSV Level Table"
-input string InpTableFile               = "T1_1500.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
+input string InpTableFile               = "table.csv"; // CSV filename only (placed in MQL5/Files or Common/Files), format: lot,gridPoints,tpMoney
 input bool   InpSkipFirstCsvRow         = true;   // Skip first row (header)
 input bool   InpUseCommonFiles          = true;  // Read CSV from Terminal/Common/Files using FILE_COMMON
 
@@ -60,7 +60,7 @@ input int    InpStartHourBroker         = 1;      // Start first entries from th
 input int    InpPauseHourBroker         = 20;     // Pause-prep starts from this hour in selected session timezone (00-23)
 
 input group "First Entry Filters"
-input bool   InpFirstEntryOnNextCandleOpen = true; // First entry only on next candle open (first tick of new bar)
+input bool   InpFirstEntryOnNextCandleOpen = false; // First entry only on next candle open (first tick of new bar)
 input bool   InpUseFirstEntryRsiFilter  = false;  // Enable RSI filter for the first entry only
 input bool   InpUseFirstEntryMaFilter   = false;   // Enable MA filter for first entry
 input bool   InpUseFirstEntryFullCandleBelowMa = false; // MA mode: true=previous candle high < MA, false=Bid < MA
@@ -73,7 +73,7 @@ input double InpRsiMinRise              = 1.0;    // Require RSI_now - RSI_prev 
 
 input group "Exit & Trailing"
 input bool   InpUseBasketTrail          = true;  // Enable basket profit trailing
-input double InpTrailStartMoney         = 100.0;   // Mode switch: table TP <= value => fixed TP, table TP > value => start trailing after profit reaches table TP
+input double InpTrailStartMoney         = 30.0;   // Mode switch: table TP <= value => fixed TP, table TP > value => start trailing after profit reaches table TP
 input double InpTrailDistancePercent    = 30.0;   // Close all when profit drops this % from peak (e.g. 33 => keep ~67% of peak)
 input double InpFloatingDDStopMoney     = 0.0;  // Close all + stop trading when floating drawdown >= value (0=off)
 
