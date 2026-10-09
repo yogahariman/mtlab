@@ -26,6 +26,8 @@ from xgboost import XGBClassifier
 
 
 ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = ROOT / "02_01_train_model_onnx_config.json"
+TRAINING_CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 # Rentang candle M5 yang dipakai sebagai dataset entry/training.
 # Ubah kedua nilai ini untuk menentukan periode data secara hardcode.
 DATA_START = "2025-01-01 00:00:00+00:00"
@@ -39,42 +41,48 @@ MODEL_METADATA_PATH = ROOT / "model_xau_single_shot.meta"
 # Downloader menghasilkan nama berdasarkan simbol broker. vx adalah contoh
 # suffix broker; pencarian glob membuat training tetap bekerja untuk XAUUSDm,
 # XAUUSD.v, dan variasi nama lainnya.
-M1_PATTERNS = ("XAUUSD*_M1.csv", "*_M1.csv")
-M5_PATTERNS = ("XAUUSD*_M5.csv", "*_M5.csv")
-H1_PATTERNS = ("XAUUSD*_H1.csv", "*_H1.csv")
+OUTCOME_TIMEFRAME = TRAINING_CONFIG["outcome_timeframe"]
+CONTEXT_TIMEFRAME = TRAINING_CONFIG["context_timeframe"]
+DATA_PATTERNS = {
+    "M1": ("XAUUSD*_M1.csv", "*_M1.csv"),
+    "M5": ("XAUUSD*_M5.csv", "*_M5.csv"),
+    "M15": ("XAUUSD*_M15.csv", "*_M15.csv"),
+    "H1": ("XAUUSD*_H1.csv", "*_H1.csv"),
+    "H4": ("XAUUSD*_H4.csv", "*_H4.csv"),
+    "D1": ("XAUUSD*_D1.csv", "*_D1.csv"),
+}
 
-ATR_PERIOD = 14
-EMA_FAST = 50
-EMA_SLOW = 200
-EMA_SLOPE_PERIOD = 20
-RSI_PERIOD = 14
-ADX_PERIOD = 14
-BB_PERIOD = 20
-HORIZON_BARS = 12
-SL_ATR_MULTIPLIER = 3.0
-RR = 1.0
-MIN_PROBABILITY = 0.30
+ATR_PERIOD = TRAINING_CONFIG["risk"]["atr_period"]
+EMA_FAST = TRAINING_CONFIG["indicators"]["ema_fast"]
+EMA_SLOW = TRAINING_CONFIG["indicators"]["ema_slow"]
+EMA_SLOPE_PERIOD = TRAINING_CONFIG["indicators"]["ema_slope_period"]
+RSI_PERIOD = TRAINING_CONFIG["indicators"]["rsi_period"]
+ADX_PERIOD = TRAINING_CONFIG["indicators"]["adx_period"]
+BB_PERIOD = TRAINING_CONFIG["indicators"]["bb_period"]
+SL_ATR_MULTIPLIER = TRAINING_CONFIG["risk"]["sl_atr_multiplier"]
+RR = TRAINING_CONFIG["risk"]["rr"]
+MIN_PROBABILITY = TRAINING_CONFIG["risk"]["min_probability"]
 RANDOM_STATE = 42
 MODEL_NAMES = (
     "logistic_regression", "random_forest", "hist_gradient_boosting", "xgboost", "mlp",
 )
 # Pilih model di sini. Tidak perlu parameter command line.
-MODEL_NAME = "xgboost"
+MODEL_NAME = TRAINING_CONFIG["model"]["name"]
 # Converter XGBoost/onnxmltools pada environment ini mendukung maksimal opset 15.
 ONNX_TARGET_OPSET = 15
 EARLY_STOPPING_ROUNDS = 50
-TRAIN_RATIO = 0.70
-TEST_RATIO = 0.15
-VALIDATION_RATIO = 0.15
+TRAIN_RATIO = TRAINING_CONFIG["split"]["train_ratio"]
+TEST_RATIO = TRAINING_CONFIG["split"]["test_ratio"]
+VALIDATION_RATIO = TRAINING_CONFIG["split"]["validation_ratio"]
 
-M5_FEATURES = [
+ENTRY_FEATURES = [
     "norm_atr_14", "bb_width", "body_to_range", "dist_ema_50",
     "dist_ema_200", "ema_slope_20", "rsi_scaled", "adx_scaled",
     "log_return_1", "upper_shadow_ratio", "lower_shadow_ratio",
     "hour_sin", "hour_cos", "norm_spread",
 ]
-H1_FEATURES = ["h1_dist_ema_50", "h1_dist_ema_200", "h1_ema_slope_20", "h1_adx_scaled"]
-FEATURES = M5_FEATURES + H1_FEATURES
+CONTEXT_FEATURES = ["context_dist_ema_50", "context_dist_ema_200", "context_ema_slope_20", "context_adx_scaled"]
+FEATURES = ENTRY_FEATURES + CONTEXT_FEATURES
 
 
 def find_data(patterns: tuple[str, ...]) -> Path:
@@ -171,14 +179,14 @@ def make_features(df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
     }, index=df.index)
 
 
-def make_labels(entry_df: pd.DataFrame, features: pd.DataFrame, outcome_df: pd.DataFrame) -> pd.Series:
+def make_labels(entry_df: pd.DataFrame, features: pd.DataFrame, outcome_df: pd.DataFrame, horizon_minutes: int) -> pd.Series:
     """Triple-barrier labels for M5 entries, evaluated using M1 candles."""
     atr_values = (features["norm_atr_14"] * entry_df["close"]).to_numpy()
     outcome_times = outcome_df.index.to_numpy()
     highs = outcome_df["high"].to_numpy()
     lows = outcome_df["low"].to_numpy()
     labels = np.full(len(entry_df), 1, dtype=np.int64)
-    horizon = pd.Timedelta(minutes=HORIZON_BARS * 5)
+    horizon = pd.Timedelta(minutes=horizon_minutes)
     for i, entry_time in enumerate(entry_df.index):
         distance = atr_values[i] * SL_ATR_MULTIPLIER
         if not np.isfinite(distance) or distance <= 0:
@@ -271,128 +279,165 @@ def build_model(name: str):
     raise ValueError(f"Unknown model {name!r}. Choose one of: {', '.join(MODEL_NAMES)}")
 
 
-def main() -> None:
-    if MODEL_NAME not in MODEL_NAMES:
-        raise ValueError(
-            f"Unknown MODEL_NAME={MODEL_NAME!r}. Choose one of: {', '.join(MODEL_NAMES)}"
-        )
-    m5_path, h1_path = find_data(M5_PATTERNS), find_data(H1_PATTERNS)
-    m1_path = find_data(M1_PATTERNS)
-    print(f"M5: {m5_path.name}\nM1: {m1_path.name}\nH1: {h1_path.name}")
-    m5, m1, h1 = load_ohlc(m5_path), load_ohlc(m1_path), load_ohlc(h1_path)
-    x_m5 = make_features(m5)
-    x_h1 = make_features(h1, prefix="h1_")
-    # H1 candle must already be closed at the M5 timestamp: no look-ahead.
-    x_h1 = x_h1.shift(1)
-    x_h1 = x_h1.reindex(m5.index, method="ffill")
-    x = pd.concat([x_m5, x_h1], axis=1)[FEATURES]
-    # Features are M5; SL/TP outcome is evaluated from subsequent M1 candles.
-    y = make_labels(m5, x_m5, m1)
-    data = pd.concat([x, y], axis=1).replace([np.inf, -np.inf], np.nan).dropna()
-    # Batasi candle entry/training sesuai rentang hardcode; feature tetap
-    # dihitung dari seluruh history agar EMA/ATR tidak kehilangan warm-up.
-    data = data.loc[DATA_START:DATA_END]
-    data = data.iloc[:-HORIZON_BARS]
-    print(f"Selected data period: {data.index.min()} -> {data.index.max()}")
-    if len(data) < 1000:
-        raise RuntimeError(f"Too little usable data for training: {len(data)} rows")
 
-    if not np.isclose(TRAIN_RATIO + VALIDATION_RATIO + TEST_RATIO, 1.0):
-        raise ValueError("TRAIN_RATIO + VALIDATION_RATIO + TEST_RATIO harus sama dengan 1.0")
+# Model arah dikonfigurasi berdasarkan peran. Target setiap model: horizon 1 hari.
+# Samakan ketiga nilai ini dengan input timeframe pada EA.
+PRIMARY_TIMEFRAME = TRAINING_CONFIG["roles"]["primary"]
+CONFIRM_TIMEFRAME1 = TRAINING_CONFIG["roles"]["confirm1"]
+HORIZON_MINUTES = TRAINING_CONFIG["horizon_minutes"]
+
+TIMEFRAME_DATA = {
+    "M5": (DATA_PATTERNS["M5"], 5),
+    "M15": (DATA_PATTERNS["M15"], 15),
+    "H1": (DATA_PATTERNS["H1"], 60),
+    "H4": (DATA_PATTERNS["H4"], 240),
+}
+
+
+def timeframe_config(timeframe: str) -> dict:
+    if timeframe not in TIMEFRAME_DATA:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+    patterns, minutes = TIMEFRAME_DATA[timeframe]
+    bars = HORIZON_MINUTES // minutes
+    if HORIZON_MINUTES % minutes != 0:
+        raise ValueError(f"Horizon {HORIZON_MINUTES} is not divisible by {timeframe}")
+    return {"name": timeframe, "patterns": patterns, "bars": bars, "horizon_minutes": HORIZON_MINUTES}
+
+
+TIMEFRAME_CONFIG = {
+    "primary": timeframe_config(PRIMARY_TIMEFRAME),
+    "confirm1": timeframe_config(CONFIRM_TIMEFRAME1),
+}
+
+
+def export_probabilities(model, model_name: str):
+    """Export one output only: probabilities with shape [batch, 3]."""
+    if model_name == "xgboost":
+        onnx_model = convert_xgboost(
+            model,
+            initial_types=[("float_input", XGBFloatTensorType([None, len(FEATURES)]))],
+            target_opset=ONNX_TARGET_OPSET,
+        )
+    else:
+        onnx_model = convert_sklearn(
+            model,
+            initial_types=[("float_input", FloatTensorType([None, len(FEATURES)]))],
+            options={id(model): {"zipmap": False}},
+            target_opset=ONNX_TARGET_OPSET,
+        )
+    if len(onnx_model.graph.output) > 1:
+        del onnx_model.graph.output[0]
+    return onnx_model
+
+
+def train_one_timeframe(role: str, config: dict) -> None:
+    timeframe = config["name"]
+    entry_path = find_data(config["patterns"])
+    outcome_path = find_data(DATA_PATTERNS[OUTCOME_TIMEFRAME])
+    context_path = find_data(DATA_PATTERNS[CONTEXT_TIMEFRAME])
+    entry = load_ohlc(entry_path)
+    outcome = load_ohlc(outcome_path)
+    context = load_ohlc(context_path)
+
+    # Feature utama mengikuti timeframe model.
+    x_entry = make_features(entry)
+    # ATR risiko berasal dari timeframe pertama/model entry.
+    # M15 model memakai ATR M15, H1 memakai ATR H1, H4 memakai ATR H4.
+    # M1 tetap hanya dipakai untuk mengevaluasi urutan hit TP/SL.
+
+    # H1 context hanya memakai candle yang sudah closed.
+    x_context = make_features(context, prefix="context_").shift(1)
+    x_context = x_context.reindex(entry.index, method="ffill")
+    x = pd.concat([x_entry, x_context], axis=1)[FEATURES]
+
+    y = make_labels(
+        entry,
+        x_entry,
+        outcome,
+        horizon_minutes=config["horizon_minutes"],
+    )
+    data = (
+        pd.concat([x, y], axis=1)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .loc[DATA_START:DATA_END]
+    )
+    data = data.iloc[:-config["bars"]]
+    if len(data) < 1000:
+        raise RuntimeError(f"Too little usable {timeframe} data: {len(data)} rows")
+
     train_end = int(len(data) * TRAIN_RATIO)
     validation_end = int(len(data) * (TRAIN_RATIO + VALIDATION_RATIO))
     train = data.iloc[:train_end]
     validation = data.iloc[train_end:validation_end]
     test = data.iloc[validation_end:]
-    print(f"Training period: {train.index.min()} -> {train.index.max()}")
-    print(f"Validation period: {validation.index.min()} -> {validation.index.max()}")
-    print(f"Testing period:    {test.index.min()} -> {test.index.max()}")
-    model = build_model(MODEL_NAME)
+
     x_train = train[FEATURES].to_numpy(dtype=np.float32)
     x_validation = validation[FEATURES].to_numpy(dtype=np.float32)
     x_test = test[FEATURES].to_numpy(dtype=np.float32)
     y_train = train["target"].to_numpy(dtype=np.int64)
     y_validation = validation["target"].to_numpy(dtype=np.int64)
     y_test = test["target"].to_numpy(dtype=np.int64)
-    # onnxmltools converter untuk XGBoost versi ini hanya menerima feature
-    # names otomatis f0, f1, ...; mapping nama feature tetap disimpan terpisah.
+
+    model = build_model(MODEL_NAME)
     if MODEL_NAME == "xgboost":
         model.fit(x_train, y_train, eval_set=[(x_validation, y_validation)], verbose=False)
+        pred_train = model.predict(x_train)
+        pred_validation = model.predict(x_validation)
+        pred_test = model.predict(x_test)
     else:
         model.fit(train[FEATURES].astype(np.float32), y_train)
-    pred_train = model.predict(x_train if MODEL_NAME == "xgboost" else train[FEATURES].astype(np.float32))
-    pred_validation = model.predict(x_validation if MODEL_NAME == "xgboost" else validation[FEATURES].astype(np.float32))
-    pred_test = model.predict(x_test if MODEL_NAME == "xgboost" else test[FEATURES].astype(np.float32))
-    print(f"Model: {MODEL_NAME}")
-    print("\nClassification report - TRAIN:")
-    print(classification_report(y_train, pred_train, labels=[0, 1, 2],
-                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
-    print("Confusion matrix TRAIN [SELL, NO_TRADE, BUY]:")
-    print(confusion_matrix(y_train, pred_train, labels=[0, 1, 2]))
-    print("\nClassification report - VALIDATION:")
-    print(classification_report(y_validation, pred_validation, labels=[0, 1, 2],
-                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
-    print("Confusion matrix VALIDATION [SELL, NO_TRADE, BUY]:")
-    print(confusion_matrix(y_validation, pred_validation, labels=[0, 1, 2]))
-    print("\nClassification report - TEST:")
-    print(classification_report(y_test, pred_test, labels=[0, 1, 2],
-                                target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0))
-    print("Confusion matrix TEST [SELL, NO_TRADE, BUY]:")
+        pred_train = model.predict(train[FEATURES].astype(np.float32))
+        pred_validation = model.predict(validation[FEATURES].astype(np.float32))
+        pred_test = model.predict(test[FEATURES].astype(np.float32))
+
+    print(f"\n===== {timeframe} =====")
+    print(f"Rows: {len(data)} | horizon: {config['horizon_minutes']} minutes")
+    print("TEST classification report:")
+    print(classification_report(
+        y_test, pred_test, labels=[0, 1, 2],
+        target_names=["SELL", "NO_TRADE", "BUY"], zero_division=0,
+    ))
+    print("TEST confusion matrix [SELL, NO_TRADE, BUY]:")
     print(confusion_matrix(y_test, pred_test, labels=[0, 1, 2]))
 
-    if MODEL_NAME == "xgboost":
-        onnx_model = convert_xgboost(
-            model, initial_types=[("float_input", XGBFloatTensorType([None, len(FEATURES)]))],
-            target_opset=ONNX_TARGET_OPSET,
-        )
-        # XGBoost exporter menghasilkan [label, probabilities]. EA hanya
-        # membutuhkan probabilities dengan shape [1, 3].
-        if len(onnx_model.graph.output) > 1:
-            del onnx_model.graph.output[0]
-    else:
-        onnx_model = convert_sklearn(
-            model, initial_types=[("float_input", FloatTensorType([None, len(FEATURES)]))],
-            options={id(model): {"zipmap": False}}, target_opset=ONNX_TARGET_OPSET,
-        )
-        # sklearn exporter juga menghasilkan [label, probabilities]. EA hanya
-        # memakai probabilities dengan shape [1, 3].
-        if len(onnx_model.graph.output) > 1:
-            del onnx_model.graph.output[0]
-    MODEL_PATH.write_bytes(onnx_model.SerializeToString())
-    FEATURE_ORDER_PATH.write_text("\n".join(FEATURES) + "\n", encoding="utf-8")
-    metrics = {
+    onnx_model = export_probabilities(model, MODEL_NAME)
+    model_path = ROOT / f"model_xau_{role}.onnx"
+    metadata_path = ROOT / f"model_xau_{role}.meta"
+    feature_path = ROOT / f"feature_order_xau_{role}.txt"
+    model_path.write_bytes(onnx_model.SerializeToString())
+    feature_path.write_text("\n".join(FEATURES) + "\n", encoding="utf-8")
+    metadata = {
         "model": MODEL_NAME,
-        "features": FEATURES, "classes": {"0": "SELL", "1": "NO_TRADE", "2": "BUY"},
-        "rows": len(data), "train_rows": len(train), "validation_rows": len(validation), "test_rows": len(test),
-        "train_start": train.index.min().isoformat(),
-        "train_end": train.index.max().isoformat(),
-        "validation_start": validation.index.min().isoformat(),
-        "validation_end": validation.index.max().isoformat(),
-        "test_start": test.index.min().isoformat(),
-        "test_end": test.index.max().isoformat(),
-        "horizon_bars": HORIZON_BARS, "sl_atr_multiplier": SL_ATR_MULTIPLIER,
-        "atr_period": ATR_PERIOD, "ema_fast": EMA_FAST, "ema_slow": EMA_SLOW,
-        "ema_slope_period": EMA_SLOPE_PERIOD, "rsi_period": RSI_PERIOD,
-        "adx_period": ADX_PERIOD, "bb_period": BB_PERIOD,
-        "rr": RR, "min_probability": MIN_PROBABILITY,
-        "validation_accuracy": float((pred_validation == y_validation).mean()),
+        "role": role,
+        "timeframe": timeframe,
+        "feature_count": len(FEATURES),
+        "horizon_bars": config["bars"],
+        "horizon_minutes": config["horizon_minutes"],
+        "risk_atr_timeframe": timeframe,
+        "outcome_timeframe": OUTCOME_TIMEFRAME,
+        "context_timeframe": CONTEXT_TIMEFRAME,
+        "atr_period": ATR_PERIOD,
+        "ema_fast": EMA_FAST,
+        "ema_slow": EMA_SLOW,
+        "ema_slope_period": EMA_SLOPE_PERIOD,
+        "rsi_period": RSI_PERIOD,
+        "adx_period": ADX_PERIOD,
+        "bb_period": BB_PERIOD,
+        "sl_atr_multiplier": SL_ATR_MULTIPLIER,
+        "rr": RR,
+        "min_probability": MIN_PROBABILITY,
         "test_accuracy": float((pred_test == y_test).mean()),
     }
-    METRICS_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    # File sederhana agar EA MQL5 dapat memuat konfigurasi tanpa JSON parser.
-    metadata = {
-        "model": MODEL_NAME, "feature_count": len(FEATURES),
-        "atr_period": ATR_PERIOD, "ema_fast": EMA_FAST, "ema_slow": EMA_SLOW,
-        "ema_slope_period": EMA_SLOPE_PERIOD, "rsi_period": RSI_PERIOD,
-        "adx_period": ADX_PERIOD, "bb_period": BB_PERIOD,
-        "sl_atr_multiplier": SL_ATR_MULTIPLIER, "rr": RR,
-        "min_probability": MIN_PROBABILITY,
-    }
-    MODEL_METADATA_PATH.write_text("\n".join(f"{k}={v}" for k, v in metadata.items()) + "\n", encoding="utf-8")
-    print(f"Saved ONNX model: {MODEL_PATH}")
-    print(f"Saved feature order: {FEATURE_ORDER_PATH}")
-    print(f"Saved model metadata: {MODEL_METADATA_PATH}")
+    metadata_path.write_text(
+        "\n".join(f"{key}={value}" for key, value in metadata.items()) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Saved: {model_path.name}, {metadata_path.name}")
 
 
 if __name__ == "__main__":
-    main()
+    if MODEL_NAME not in MODEL_NAMES:
+        raise ValueError(f"Unknown MODEL_NAME={MODEL_NAME!r}")
+    for role, config in TIMEFRAME_CONFIG.items():
+        train_one_timeframe(role, config)

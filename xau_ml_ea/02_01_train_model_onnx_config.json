@@ -1,0 +1,31 @@
+{
+  "roles": {
+    "primary": "M5",
+    "confirm1": "M15"
+  },
+  "outcome_timeframe": "M1",
+  "context_timeframe": "H1",
+  "horizon_minutes": 60,
+  "risk": {
+    "atr_period": 14,
+    "sl_atr_multiplier": 1.0,
+    "rr": 1.0,
+    "min_probability": 0.6
+  },
+  "indicators": {
+    "ema_fast": 50,
+    "ema_slow": 200,
+    "ema_slope_period": 20,
+    "rsi_period": 14,
+    "adx_period": 14,
+    "bb_period": 20
+  },
+  "model": {
+    "name": "xgboost"
+  },
+  "split": {
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15
+  }
+}
